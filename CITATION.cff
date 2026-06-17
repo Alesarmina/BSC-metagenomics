@@ -5,7 +5,7 @@ type: software
 authors:
   - family-names: Sarmina
     given-names: Gloria A.
-repository-code: "https://github.com/XXXXXXX/BSC-metagenomics"
+repository-code: "https://github.com/Alesarmina/BSC-metagenomics"
 abstract: "Bioinformatic and statistical analysis code for shotgun metagenomes of biological soil crusts from Cuatro Ciénegas and Valle de Guadalupe deserts, Mexico."
 keywords:
   - biological soil crusts
