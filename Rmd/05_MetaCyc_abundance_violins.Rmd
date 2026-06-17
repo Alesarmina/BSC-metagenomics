@@ -1,0 +1,3004 @@
+---
+title: "MetaCyc_abundance_violins"
+author: "Gloria Sarmina"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# MetaCyc abundance violins
+
+## Descripción general del protocolo
+
+Este protocolo genera la sección del análisis MetaCyc dedicada a  visualizar las distribuciones de abundancia funcional por categoría ecológico-funcional con gráficos de violín. El análisis parte de la tabla original de abundancias MetaCyc generada por HUMAnN3 y de la tabla de anotación función-categoría conservada del protocolo previo de heatmap.
+
+El objetivo principal es sumar las abundancias de reacciones MetaCyc dentro de cada muestra y categoría funcional, generando un valor de abundancia por muestra y categoría. Posteriormente, estas distribuciones se comparan entre los dos desiertos, Cuatro Ciénegas y Valle de Guadalupe, mediante pruebas de Wilcoxon por categoría funcional. Los valores de p se corrigen por comparaciones múltiples usando el método Benjamini-Hochberg, y se calcula Cliff's delta como medida de tamaño de efecto no paramétrica.
+
+Finalmente, se genera una figura de violines con eje y en escala log10. Cada panel representa una categoría funcional. Los asteriscos en los títulos de los paneles indican categorías con diferencias significativas después de la corrección FDR.
+
+## Resumen metodológico 
+
+Se analizaron abundancias funcionales MetaCyc obtenidas con HUMAnN3. La tabla original de abundancias fue limpiada para eliminar filas internas no funcionales, y las muestras fueron renombradas de acuerdo con su identidad ecológica y desierto de origen. Las funciones MetaCyc fueron asociadas con las categorías ecológico-funcionales generadas en el protocolo previo de heatmap. Posteriormente, la matriz funcional se transformó a formato largo y las abundancias de las reacciones fueron sumadas dentro de cada muestra y categoría funcional. Para cada categoría se compararon las abundancias entre Cuatro Ciénegas y Valle de Guadalupe mediante pruebas de Wilcoxon rank-sum. Los valores de p fueron ajustados mediante corrección Benjamini-Hochberg para controlar la tasa de falsos descubrimientos. Además, se calculó Cliff's delta como medida de tamaño de efecto. Las distribuciones de abundancia por categoría y desierto se visualizaron mediante gráficos de violín con eje y en escala log10, agregando un pseudoconteo de 1 únicamente para la visualización.
+
+# Bloque 0. Preparación del proyecto, directorios y bitácora
+
+```{r bloque_0_preparacion, message=FALSE, warning=FALSE}
+# ============================================================
+# MetaCyc_abundance_violins
+# Preparación inicial del protocolo
+# ============================================================
+
+# Limpiar ambiente de R
+rm(list = ls())
+
+# Limpiar consola
+cat("\014")
+
+# Opciones generales del R Markdown
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE
+)
+
+# ============================================================
+# 0.1. Nombre del proyecto
+# ============================================================
+
+project_name <- "MetaCyc_abundance_violins"
+
+# ============================================================
+# 0.2. Directorios de entrada
+# ============================================================
+# Ruta real en Macarena:
+# En la terminal confirmaste que estás en:
+# /Users/ale/Desktop/HUMAnN3
+
+dir_input <- "/Users/ale/Desktop/HUMAnN3"
+
+file_metacyc <- file.path(
+  dir_input,
+  "rxn-cpm-metacyc.tsv"
+)
+
+# ============================================================
+# 0.2.1. Buscar tabla conservada función-categoría del heatmap
+# ============================================================
+# Esta tabla viene del protocolo previo de heatmap.
+# La buscamos dentro de HUMAnN3 para no depender de una ruta exacta.
+
+function_category_candidates <- list.files(
+  path = dir_input,
+  pattern = "^04_tabla_funcion_categoria\\.csv$",
+  recursive = TRUE,
+  full.names = TRUE
+)
+
+if (length(function_category_candidates) == 0) {
+  stop(
+    paste0(
+      "No se encontró la tabla 04_tabla_funcion_categoria.csv dentro de:\n",
+      dir_input,
+      "\n\nEsta tabla debe venir del protocolo previo de heatmap.\n",
+      "Revisa si está dentro de MetaCyc_abundance_heatmap/outputs/tables."
+    )
+  )
+}
+
+# Si hay más de una, preferimos la que venga del protocolo de heatmap
+heatmap_candidate <- function_category_candidates[
+  grepl("MetaCyc_abundance_heatmap", function_category_candidates)
+]
+
+if (length(heatmap_candidate) >= 1) {
+  file_function_category <- heatmap_candidate[1]
+} else {
+  file_function_category <- function_category_candidates[1]
+}
+
+dir_heatmap_tables <- dirname(file_function_category)
+dir_heatmap_project <- dirname(dirname(dir_heatmap_tables))
+
+cat("Tabla función-categoría encontrada en:\n")
+cat(file_function_category, "\n\n")
+
+cat("Directorio del protocolo previo de heatmap detectado:\n")
+cat(dir_heatmap_project, "\n\n")
+
+# ============================================================
+# 0.3. Directorios de salida del nuevo protocolo
+# ============================================================
+# El protocolo de violines se guardará dentro de:
+# /Users/ale/Desktop/HUMAnN3/MetaCyc_abundance_violins
+
+dir_project <- file.path(
+  dir_input,
+  "MetaCyc_abundance_violins"
+)
+
+dir_outputs <- file.path(dir_project, "outputs")
+dir_figures <- file.path(dir_outputs, "figures")
+dir_tables  <- file.path(dir_outputs, "tables")
+dir_stats   <- file.path(dir_outputs, "statistics")
+dir_logs    <- file.path(dir_outputs, "logs")
+dir_objects <- file.path(dir_outputs, "r_objects")
+dir_supplement <- file.path(dir_outputs, "supplementary_tables")
+
+dirs_to_create <- c(
+  dir_project,
+  dir_outputs,
+  dir_figures,
+  dir_tables,
+  dir_stats,
+  dir_logs,
+  dir_objects,
+  dir_supplement
+)
+
+for (d in dirs_to_create) {
+  
+  if (!dir.exists(d)) {
+    dir.create(d, recursive = TRUE, showWarnings = FALSE)
+  }
+  
+  if (!dir.exists(d)) {
+    stop(
+      paste0(
+        "No se pudo crear la carpeta:\n",
+        d,
+        "\n\nEsto indica un problema de permisos o que la ruta base no es escribible."
+      )
+    )
+  }
+}
+
+cat("Carpetas del protocolo de violines verificadas correctamente:\n")
+print(dirs_to_create)
+# ============================================================
+# 0.4. Archivo de bitácora
+# ============================================================
+
+log_file <- file.path(
+  dir_logs,
+  paste0(project_name, "_bitacora.txt")
+)
+
+# Crear archivo de bitácora de forma segura
+bitacora_texto_inicial <- paste0(
+  "BITÁCORA DEL PROYECTO: ", project_name, "\n",
+  "Fecha de inicio: ", Sys.time(), "\n",
+  "============================================================\n\n"
+)
+
+writeLines(
+  bitacora_texto_inicial,
+  con = log_file
+)
+
+# Verificar que la bitácora sí se creó
+if (!file.exists(log_file)) {
+  stop(
+    paste0(
+      "No se pudo crear el archivo de bitácora en:\n",
+      log_file
+    )
+  )
+}
+
+cat("Bitácora creada correctamente en:\n")
+cat(log_file, "\n")
+
+# ============================================================
+# 0.4. Archivo de bitácora
+# ============================================================
+
+log_file <- file.path(
+  dir_logs,
+  paste0(project_name, "_bitacora.txt")
+)
+
+cat(
+  paste0(
+    "BITÁCORA DEL PROYECTO: ", project_name, "\n",
+    "Fecha de inicio: ", Sys.time(), "\n",
+    "============================================================\n\n"
+  ),
+  file = log_file
+)
+
+# ============================================================
+# 0.5. Funciones auxiliares para la bitácora
+# ============================================================
+
+log_write <- function(...) {
+  text <- paste0(...)
+  cat(text, "\n")
+  cat(text, "\n", file = log_file, append = TRUE)
+}
+
+log_step <- function(step_title, note = NULL) {
+  separator <- paste(rep("=", 60), collapse = "")
+  
+  log_write("\n", separator)
+  log_write(step_title)
+  log_write("Fecha y hora: ", Sys.time())
+  
+  if (!is.null(note)) {
+    log_write("Nota: ", note)
+  }
+  
+  log_write(separator, "\n")
+}
+
+preview_table <- function(x, table_name, n = 5, max_cols = 8) {
+  
+  log_write("\n--- Revisión de tabla: ", table_name, " ---")
+  
+  df <- as.data.frame(x)
+  
+  log_write(
+    "Dimensiones: ",
+    nrow(df), " filas x ",
+    ncol(df), " columnas"
+  )
+  
+  preview <- utils::head(df, n)
+  
+  if (is.finite(max_cols) && ncol(preview) > max_cols) {
+    preview_to_print <- preview[, seq_len(max_cols), drop = FALSE]
+    log_write(
+      "Vista previa: primeras ", n,
+      " filas y primeras ", max_cols,
+      " columnas. La tabla completa tiene ",
+      ncol(df), " columnas."
+    )
+  } else {
+    preview_to_print <- preview
+    log_write("Vista previa: primeras ", n, " filas.")
+  }
+  
+  captured_preview <- capture.output(print(preview_to_print))
+  
+  cat(
+    paste(captured_preview, collapse = "\n"),
+    "\n",
+    file = log_file,
+    append = TRUE
+  )
+  
+  print(preview_to_print)
+  
+  invisible(preview_to_print)
+}
+
+check_file_exists <- function(file_path, file_description = "archivo") {
+  if (!file.exists(file_path)) {
+    stop(
+      paste0(
+        "No se encontró el ", file_description, " en la ruta:\n",
+        file_path,
+        "\nRevisa que la ruta sea correcta antes de continuar."
+      )
+    )
+  } else {
+    log_write("Archivo encontrado: ", file_path)
+  }
+}
+
+# ============================================================
+# 0.6. Registrar rutas del protocolo
+# ============================================================
+
+log_step(
+  "Bloque 0. Preparación del proyecto, directorios y bitácora",
+  "Se definieron rutas de entrada, rutas del protocolo previo de heatmap y carpetas de salida para los gráficos de violín."
+)
+
+tabla_directorios <- tibble::tibble(
+  elemento = c(
+    "Nombre del proyecto",
+    "Directorio de entrada",
+    "Archivo MetaCyc de entrada",
+    "Directorio del protocolo previo de heatmap",
+    "Tabla función-categoría conservada",
+    "Directorio del nuevo proyecto",
+    "Directorio de outputs",
+    "Directorio de figuras",
+    "Directorio de tablas",
+    "Directorio de estadísticas",
+    "Directorio de bitácora",
+    "Directorio de objetos R",
+    "Directorio de tablas suplementarias",
+    "Archivo de bitácora"
+  ),
+  ruta = c(
+    project_name,
+    dir_input,
+    file_metacyc,
+    dir_heatmap_project,
+    file_function_category,
+    dir_project,
+    dir_outputs,
+    dir_figures,
+    dir_tables,
+    dir_stats,
+    dir_logs,
+    dir_objects,
+    dir_supplement,
+    log_file
+  )
+)
+
+preview_table(
+  tabla_directorios,
+  table_name = "tabla_directorios",
+  n = 5,
+  max_cols = Inf
+)
+
+# ============================================================
+# 0.7. Verificar archivos de entrada principales
+# ============================================================
+
+check_file_exists(
+  file_metacyc,
+  file_description = "archivo de abundancias MetaCyc rxn-cpm-metacyc.tsv"
+)
+
+check_file_exists(
+  file_function_category,
+  file_description = "tabla conservada de función-categoría del protocolo de heatmap"
+)
+
+log_write("Bloque 0 completado correctamente.")
+```
+
+## Archivos de entrada
+
+El archivo principal de abundancias MetaCyc es:
+
+```{r mostrar_archivo_metacyc}
+file_metacyc
+```
+
+La tabla de anotación función-categoría conservada del protocolo anterior es:
+
+```{r mostrar_archivo_funcion_categoria}
+file_function_category
+```
+
+## Carpeta de outputs del nuevo protocolo
+
+Todos los resultados del protocolo de violines se guardarán dentro de:
+
+```{r mostrar_directorio_outputs_violin}
+dir_project
+```
+
+La bitácora se guardará en:
+
+```{r mostrar_bitacora_violin}
+log_file
+```
+# ============================================================
+# Bloque 1. Librerías, sesión y funciones estadísticas
+# ============================================================
+```{r}
+# ============================================================
+# Bloque 1. Librerías, sesión y funciones estadísticas
+# ============================================================
+
+log_step(
+  "Bloque 1. Librerías, sesión y funciones estadísticas",
+  "Se cargan paquetes necesarios y se definen funciones auxiliares para el análisis estadístico posterior."
+)
+
+# ============================================================
+# 1.1. Paquetes requeridos
+# ============================================================
+
+options(repos = c(CRAN = "https://cloud.r-project.org"))
+
+required_packages <- c(
+  "tidyverse",
+  "readr",
+  "dplyr",
+  "tidyr",
+  "tibble",
+  "stringr",
+  "forcats",
+  "ggplot2",
+  "scales",
+  "knitr",
+  "grid"
+)
+
+packages_to_install <- required_packages[
+  !required_packages %in% rownames(installed.packages())
+]
+
+if (length(packages_to_install) > 0) {
+  install.packages(packages_to_install)
+}
+
+invisible(
+  lapply(
+    required_packages,
+    library,
+    character.only = TRUE
+  )
+)
+
+log_write(
+  "Paquetes cargados correctamente: ",
+  paste(required_packages, collapse = ", ")
+)
+
+# ============================================================
+# 1.2. Registrar información de sesión
+# ============================================================
+
+session_info_text <- capture.output(sessionInfo())
+
+cat(
+  paste(session_info_text, collapse = "\n"),
+  "\n",
+  file = file.path(dir_logs, "01_sessionInfo.txt")
+)
+
+log_write(
+  "Información de sesión guardada en: ",
+  file.path(dir_logs, "01_sessionInfo.txt")
+)
+
+# ============================================================
+# 1.3. Función para calcular Cliff's delta
+# ============================================================
+# Cliff's delta es un tamaño de efecto no paramétrico.
+# Valores cercanos a 0 indican poco efecto.
+# Valores positivos indican mayores valores en el primer grupo.
+# Valores negativos indican mayores valores en el segundo grupo.
+
+cliffs_delta_manual <- function(x, y) {
+  
+  x <- x[is.finite(x)]
+  y <- y[is.finite(y)]
+  
+  if (length(x) == 0 | length(y) == 0) {
+    return(NA_real_)
+  }
+  
+  comparisons <- outer(x, y, "-")
+  
+  delta <- (
+    sum(comparisons > 0) -
+      sum(comparisons < 0)
+  ) / (length(x) * length(y))
+  
+  return(delta)
+}
+
+# ============================================================
+# 1.4. Función para clasificar magnitud de Cliff's delta
+# ============================================================
+
+classify_cliffs_delta <- function(delta) {
+  
+  abs_delta <- abs(delta)
+  
+  case_when(
+    is.na(abs_delta) ~ NA_character_,
+    abs_delta < 0.147 ~ "negligible",
+    abs_delta < 0.330 ~ "small",
+    abs_delta < 0.474 ~ "medium",
+    TRUE ~ "large"
+  )
+}
+
+# ============================================================
+# 1.5. Función para generar etiquetas de significancia
+# ============================================================
+
+significance_label <- function(q_value) {
+  
+  case_when(
+    is.na(q_value) ~ "",
+    q_value < 0.001 ~ "***",
+    q_value < 0.01  ~ "**",
+    q_value < 0.05  ~ "*",
+    TRUE ~ ""
+  )
+}
+
+# ============================================================
+# 1.6. Verificar que las funciones trabajen
+# ============================================================
+
+test_delta <- cliffs_delta_manual(
+  x = c(10, 11, 12),
+  y = c(1, 2, 3)
+)
+
+test_delta_class <- classify_cliffs_delta(test_delta)
+
+tabla_funciones_test <- tibble(
+  prueba = c(
+    "Cliff's delta manual",
+    "Clasificación de Cliff's delta",
+    "Etiqueta q = 0.04",
+    "Etiqueta q = 0.004",
+    "Etiqueta q = 0.0004"
+  ),
+  resultado = c(
+    as.character(test_delta),
+    test_delta_class,
+    significance_label(0.04),
+    significance_label(0.004),
+    significance_label(0.0004)
+  )
+)
+
+preview_table(
+  tabla_funciones_test,
+  table_name = "tabla_funciones_test",
+  n = 5,
+  max_cols = Inf
+)
+
+# ============================================================
+# 1.7. Guardar objetos auxiliares
+# ============================================================
+
+saveRDS(
+  required_packages,
+  file = file.path(dir_objects, "01_required_packages.rds")
+)
+
+saveRDS(
+  session_info_text,
+  file = file.path(dir_objects, "01_session_info.rds")
+)
+
+log_write("Bloque 1 completado correctamente.")
+```
+# Bloque 2. Cargar tabla MetaCyc original y revisar estructura
+
+```{r bloque_2_cargar_metacyc, message=FALSE, warning=FALSE}
+# ============================================================
+# Bloque 2. Cargar tabla MetaCyc original y revisar estructura
+# ============================================================
+
+log_step(
+  "Bloque 2. Cargar tabla MetaCyc original y revisar estructura",
+  "Se carga la tabla rxn-cpm-metacyc.tsv generada por HUMAnN3 y se revisa su estructura inicial."
+)
+
+# ============================================================
+# 2.1. Cargar archivo MetaCyc original
+# ============================================================
+
+metacyc_raw <- readr::read_tsv(
+  file_metacyc,
+  show_col_types = FALSE
+)
+
+preview_table(
+  metacyc_raw,
+  table_name = "metacyc_raw",
+  n = 5,
+  max_cols = 8
+)
+
+log_write(
+  "Tabla MetaCyc original cargada correctamente desde: ",
+  file_metacyc
+)
+
+# ============================================================
+# 2.2. Revisar nombres de columnas
+# ============================================================
+
+metacyc_colnames <- tibble::tibble(
+  column_index = seq_along(colnames(metacyc_raw)),
+  column_name = colnames(metacyc_raw)
+)
+
+preview_table(
+  metacyc_colnames,
+  table_name = "metacyc_colnames",
+  n = nrow(metacyc_colnames),
+  max_cols = Inf
+)
+
+# ============================================================
+# 2.3. Detectar columna de identificador funcional
+# ============================================================
+# En tablas HUMAnN3 puede llamarse "# Gene Family" o algo similar.
+
+possible_function_cols <- c(
+  "# Gene Family",
+  "Gene Family",
+  "Gene_Family",
+  "function",
+  "Function",
+  "MetaCyc_reaction"
+)
+
+function_col <- intersect(
+  possible_function_cols,
+  colnames(metacyc_raw)
+)
+
+if (length(function_col) == 0) {
+  function_col <- colnames(metacyc_raw)[1]
+  log_write(
+    "No se encontró una columna funcional con nombre esperado. ",
+    "Se usará la primera columna como identificador funcional: ",
+    function_col
+  )
+} else {
+  function_col <- function_col[1]
+  log_write(
+    "Columna de identificador funcional detectada: ",
+    function_col
+  )
+}
+
+# Renombrar columna funcional para trabajar de forma estandarizada
+metacyc_renamed <- metacyc_raw %>%
+  dplyr::rename(
+    function_id = dplyr::all_of(function_col)
+  )
+
+# ============================================================
+# 2.4. Identificar columnas de muestras
+# ============================================================
+
+sample_cols_original <- setdiff(
+  colnames(metacyc_renamed),
+  "function_id"
+)
+
+tabla_sample_cols_original <- tibble::tibble(
+  sample_column = sample_cols_original
+)
+
+preview_table(
+  tabla_sample_cols_original,
+  table_name = "sample_cols_original",
+  n = length(sample_cols_original),
+  max_cols = Inf
+)
+
+log_write(
+  "Número de columnas de abundancia detectadas: ",
+  length(sample_cols_original)
+)
+
+# ============================================================
+# 2.5. Eliminar filas internas no funcionales
+# ============================================================
+# Algunas tablas HUMAnN3 contienen filas internas como Sample o Type.
+
+internal_rows <- c("Sample", "Type")
+
+n_internal_rows <- sum(
+  metacyc_renamed$function_id %in% internal_rows,
+  na.rm = TRUE
+)
+
+log_write(
+  "Filas internas detectadas antes de limpieza: ",
+  n_internal_rows
+)
+
+metacyc_clean <- metacyc_renamed %>%
+  dplyr::filter(
+    !function_id %in% internal_rows
+  )
+
+# ============================================================
+# 2.6. Convertir columnas de abundancia a numéricas
+# ============================================================
+
+metacyc_clean <- metacyc_clean %>%
+  dplyr::mutate(
+    dplyr::across(
+      dplyr::all_of(sample_cols_original),
+      ~ suppressWarnings(as.numeric(.x))
+    )
+  )
+
+# ============================================================
+# 2.7. Verificar valores NA después de conversión numérica
+# ============================================================
+
+na_summary <- metacyc_clean %>%
+  dplyr::summarise(
+    dplyr::across(
+      dplyr::all_of(sample_cols_original),
+      ~ sum(is.na(.x))
+    )
+  ) %>%
+  tidyr::pivot_longer(
+    cols = dplyr::everything(),
+    names_to = "sample_column",
+    values_to = "n_NA"
+  ) %>%
+  dplyr::arrange(desc(n_NA))
+
+preview_table(
+  na_summary,
+  table_name = "na_summary_after_numeric_conversion",
+  n = nrow(na_summary),
+  max_cols = Inf
+)
+
+if (any(na_summary$n_NA > 0)) {
+  log_write(
+    "Advertencia: Se detectaron NA en columnas de abundancia después de convertir a numérico."
+  )
+} else {
+  log_write(
+    "Verificación correcta: no se detectaron NA en columnas de abundancia después de convertir a numérico."
+  )
+}
+
+# ============================================================
+# 2.8. Revisar dimensiones antes y después de limpieza
+# ============================================================
+
+tabla_dimensiones_bloque2 <- tibble::tibble(
+  objeto = c(
+    "metacyc_raw",
+    "metacyc_clean"
+  ),
+  filas = c(
+    nrow(metacyc_raw),
+    nrow(metacyc_clean)
+  ),
+  columnas = c(
+    ncol(metacyc_raw),
+    ncol(metacyc_clean)
+  )
+)
+
+preview_table(
+  tabla_dimensiones_bloque2,
+  table_name = "tabla_dimensiones_bloque2",
+  n = 2,
+  max_cols = Inf
+)
+
+# ============================================================
+# 2.9. Guardar tablas y objetos del bloque
+# ============================================================
+
+readr::write_csv(
+  metacyc_colnames,
+  file = file.path(dir_tables, "02_metacyc_colnames.csv")
+)
+
+readr::write_csv(
+  na_summary,
+  file = file.path(dir_tables, "02_na_summary_after_numeric_conversion.csv")
+)
+
+readr::write_csv(
+  tabla_dimensiones_bloque2,
+  file = file.path(dir_tables, "02_tabla_dimensiones_bloque2.csv")
+)
+
+saveRDS(
+  metacyc_raw,
+  file = file.path(dir_objects, "02_metacyc_raw.rds")
+)
+
+saveRDS(
+  metacyc_clean,
+  file = file.path(dir_objects, "02_metacyc_clean.rds")
+)
+
+saveRDS(
+  sample_cols_original,
+  file = file.path(dir_objects, "02_sample_cols_original.rds")
+)
+
+log_write("Bloque 2 completado correctamente.")
+```
+# Bloque 3. Renombrar muestras y construir metadata
+
+```{r bloque_3_renombrar_muestras_metadata, message=FALSE, warning=FALSE}
+# ============================================================
+# Bloque 3. Renombrar muestras y construir metadata
+# ============================================================
+
+log_step(
+  "Bloque 3. Renombrar muestras y construir metadata",
+  "Se renombran las muestras de acuerdo con su identidad ecológica y se construye una tabla de metadata con cuadrante y desierto."
+)
+
+# ============================================================
+# 3.1. Crear tabla de correspondencia de nombres
+# ============================================================
+# Los nombres originales vienen de HUMAnN3.
+# Se remueve el sufijo de abundancia para recuperar el identificador original.
+
+sample_rename_table <- tibble::tibble(
+  sample_column_original = sample_cols_original
+) %>%
+  dplyr::mutate(
+    sample_id_original = stringr::str_remove(sample_column_original, "_Abundance.*$")
+  ) %>%
+  dplyr::mutate(
+    sample_id_renamed = dplyr::case_when(
+      sample_id_original == "A1"  ~ "A1_CC",
+      sample_id_original == "A21" ~ "A2_CC",
+      sample_id_original == "A22" ~ "A3_CC",
+      sample_id_original == "A4"  ~ "B1_CC",
+      sample_id_original == "A5"  ~ "B2_CC",
+      sample_id_original == "A6"  ~ "B3_CC",
+      sample_id_original == "A7"  ~ "C1_CC",
+      sample_id_original == "A8"  ~ "C2_CC",
+      sample_id_original == "A9"  ~ "C3_CC",
+      sample_id_original == "A23" ~ "D1_VG",
+      sample_id_original == "A11" ~ "D2_VG",
+      sample_id_original == "A12" ~ "D3_VG",
+      sample_id_original == "A13" ~ "E1_VG",
+      sample_id_original == "A14" ~ "E2_VG",
+      sample_id_original == "A15" ~ "E3_VG",
+      sample_id_original == "A16" ~ "F1_VG",
+      sample_id_original == "A17" ~ "F2_VG",
+      sample_id_original == "A24" ~ "F3_VG",
+      TRUE ~ NA_character_
+    )
+  )
+
+preview_table(
+  sample_rename_table,
+  table_name = "sample_rename_table",
+  n = nrow(sample_rename_table),
+  max_cols = Inf
+)
+
+# ============================================================
+# 3.2. Verificar que todas las muestras se pudieron renombrar
+# ============================================================
+
+unmapped_samples <- sample_rename_table %>%
+  dplyr::filter(is.na(sample_id_renamed))
+
+if (nrow(unmapped_samples) > 0) {
+  
+  preview_table(
+    unmapped_samples,
+    table_name = "unmapped_samples",
+    n = nrow(unmapped_samples),
+    max_cols = Inf
+  )
+  
+  stop(
+    "Hay muestras sin correspondencia de renombrado. Revisa sample_rename_table antes de continuar."
+  )
+  
+} else {
+  log_write(
+    "Verificación correcta: todas las muestras fueron renombradas."
+  )
+}
+
+# ============================================================
+# 3.3. Renombrar columnas de abundancia en la tabla MetaCyc
+# ============================================================
+# rename_vector tendrá:
+# nombres = columnas originales
+# valores = nombres nuevos
+
+rename_vector <- sample_rename_table$sample_id_renamed
+names(rename_vector) <- sample_rename_table$sample_column_original
+
+metacyc_renamed_samples <- metacyc_clean %>%
+  dplyr::rename_with(
+    .cols = dplyr::all_of(names(rename_vector)),
+    .fn = ~ unname(rename_vector[.x])
+  )
+
+preview_table(
+  metacyc_renamed_samples,
+  table_name = "metacyc_renamed_samples",
+  n = 5,
+  max_cols = 8
+)
+# ============================================================
+# 3.4. Construir metadata de muestras
+# ============================================================
+
+sample_metadata <- sample_rename_table %>%
+  dplyr::transmute(
+    sample_column_original,
+    sample_id_original,
+    Sample = sample_id_renamed,
+    Quadrant = stringr::str_extract(sample_id_renamed, "^[A-F]"),
+    Replicate = stringr::str_extract(sample_id_renamed, "[0-9]+"),
+    Desert_code = stringr::str_extract(sample_id_renamed, "CC|VG"),
+    Desert = dplyr::case_when(
+      Desert_code == "CC" ~ "Cuatro Ciénegas",
+      Desert_code == "VG" ~ "Valle de Guadalupe",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+  dplyr::arrange(Desert_code, Quadrant, Replicate)
+
+preview_table(
+  sample_metadata,
+  table_name = "sample_metadata",
+  n = nrow(sample_metadata),
+  max_cols = Inf
+)
+
+# ============================================================
+# 3.5. Revisar número de muestras por desierto
+# ============================================================
+
+sample_metadata_summary <- sample_metadata %>%
+  dplyr::count(Desert_code, Desert, name = "n_samples")
+
+preview_table(
+  sample_metadata_summary,
+  table_name = "sample_metadata_summary",
+  n = nrow(sample_metadata_summary),
+  max_cols = Inf
+)
+
+expected_counts <- sample_metadata_summary %>%
+  dplyr::pull(n_samples)
+
+if (!all(expected_counts == 9)) {
+  stop(
+    "El número de muestras por desierto no es 9 y 9. Revisa sample_metadata."
+  )
+} else {
+  log_write(
+    "Verificación correcta: hay 9 muestras de Cuatro Ciénegas y 9 muestras de Valle de Guadalupe."
+  )
+}
+
+# ============================================================
+# 3.6. Verificar orden y columnas finales
+# ============================================================
+
+sample_cols_renamed <- sample_rename_table$sample_id_renamed
+
+missing_after_rename <- setdiff(
+  sample_cols_renamed,
+  colnames(metacyc_renamed_samples)
+)
+
+if (length(missing_after_rename) > 0) {
+  stop(
+    paste0(
+      "Faltan columnas renombradas en metacyc_renamed_samples:\n",
+      paste(missing_after_rename, collapse = ", ")
+    )
+  )
+} else {
+  log_write(
+    "Verificación correcta: todas las columnas renombradas están presentes en la tabla MetaCyc."
+  )
+}
+
+tabla_dimensiones_bloque3 <- tibble::tibble(
+  objeto = c(
+    "metacyc_renamed_samples",
+    "sample_metadata"
+  ),
+  filas = c(
+    nrow(metacyc_renamed_samples),
+    nrow(sample_metadata)
+  ),
+  columnas = c(
+    ncol(metacyc_renamed_samples),
+    ncol(sample_metadata)
+  )
+)
+
+preview_table(
+  tabla_dimensiones_bloque3,
+  table_name = "tabla_dimensiones_bloque3",
+  n = nrow(tabla_dimensiones_bloque3),
+  max_cols = Inf
+)
+
+# ============================================================
+# 3.7. Guardar tablas y objetos del bloque
+# ============================================================
+
+readr::write_csv(
+  sample_rename_table,
+  file = file.path(dir_tables, "03_sample_rename_table.csv")
+)
+
+readr::write_csv(
+  sample_metadata,
+  file = file.path(dir_tables, "03_sample_metadata.csv")
+)
+
+readr::write_csv(
+  sample_metadata_summary,
+  file = file.path(dir_tables, "03_sample_metadata_summary.csv")
+)
+
+readr::write_csv(
+  tabla_dimensiones_bloque3,
+  file = file.path(dir_tables, "03_tabla_dimensiones_bloque3.csv")
+)
+
+saveRDS(
+  metacyc_renamed_samples,
+  file = file.path(dir_objects, "03_metacyc_renamed_samples.rds")
+)
+
+saveRDS(
+  sample_metadata,
+  file = file.path(dir_objects, "03_sample_metadata.rds")
+)
+
+saveRDS(
+  sample_cols_renamed,
+  file = file.path(dir_objects, "03_sample_cols_renamed.rds")
+)
+
+log_write("Bloque 3 completado correctamente.")
+```
+# Bloque 4. Cargar tabla función-categoría y unir con MetaCyc
+
+```{r bloque_4_unir_funcion_categoria, message=FALSE, warning=FALSE}
+# ============================================================
+# Bloque 4. Cargar tabla función-categoría y unir con MetaCyc
+# ============================================================
+
+log_step(
+  "Bloque 4. Cargar tabla función-categoría y unir con MetaCyc",
+  "Se carga la tabla conservada del protocolo de heatmap y se une con la tabla MetaCyc limpia."
+)
+
+# ============================================================
+# 4.1. Cargar tabla función-categoría
+# ============================================================
+
+function_category_raw <- readr::read_csv(
+  file_function_category,
+  show_col_types = FALSE
+)
+
+preview_table(
+  function_category_raw,
+  table_name = "function_category_raw",
+  n = 5,
+  max_cols = Inf
+)
+
+# ============================================================
+# 4.2. Revisar nombres de columnas disponibles
+# ============================================================
+
+function_category_colnames <- tibble::tibble(
+  column_index = seq_along(colnames(function_category_raw)),
+  column_name = colnames(function_category_raw)
+)
+
+preview_table(
+  function_category_colnames,
+  table_name = "function_category_colnames",
+  n = nrow(function_category_colnames),
+  max_cols = Inf
+)
+
+# ============================================================
+# 4.3. Detectar columna de función y columna de categoría
+# ============================================================
+
+possible_function_cols_category <- c(
+  "function_id",
+  "Function",
+  "function",
+  "funcion",
+  "Funcion",
+  "MetaCyc_function",
+  "MetaCyc_reaction",
+  "# Gene Family",
+  "Gene Family",
+  "Gene_Family"
+)
+
+possible_category_cols <- c(
+  "Category",
+  "category",
+  "Categoria",
+  "categoria",
+  "Functional_category",
+  "functional_category",
+  "Categoria_funcional",
+  "categoria_funcional",
+  "Ecological_functional_category",
+  "ecological_functional_category"
+)
+
+function_col_category <- intersect(
+  possible_function_cols_category,
+  colnames(function_category_raw)
+)
+
+category_col <- intersect(
+  possible_category_cols,
+  colnames(function_category_raw)
+)
+
+if (length(function_col_category) == 0) {
+  function_col_category <- colnames(function_category_raw)[1]
+  log_write(
+    "No se detectó columna de función con nombre esperado. ",
+    "Se usará la primera columna: ",
+    function_col_category
+  )
+} else {
+  function_col_category <- function_col_category[1]
+  log_write(
+    "Columna de función detectada en tabla función-categoría: ",
+    function_col_category
+  )
+}
+
+if (length(category_col) == 0) {
+  category_col <- colnames(function_category_raw)[2]
+  log_write(
+    "No se detectó columna de categoría con nombre esperado. ",
+    "Se usará la segunda columna: ",
+    category_col
+  )
+} else {
+  category_col <- category_col[1]
+  log_write(
+    "Columna de categoría detectada: ",
+    category_col
+  )
+}
+
+# ============================================================
+# 4.4. Estandarizar tabla función-categoría
+# ============================================================
+
+function_category <- function_category_raw %>%
+  dplyr::rename(
+    function_id = dplyr::all_of(function_col_category),
+    Functional_category = dplyr::all_of(category_col)
+  ) %>%
+  dplyr::select(
+    function_id,
+    Functional_category
+  ) %>%
+  dplyr::mutate(
+    function_id = as.character(function_id),
+    Functional_category = as.character(Functional_category)
+  ) %>%
+  dplyr::distinct()
+
+preview_table(
+  function_category,
+  table_name = "function_category_standardized",
+  n = 5,
+  max_cols = Inf
+)
+
+# ============================================================
+# 4.5. Revisar duplicados en la tabla función-categoría
+# ============================================================
+
+duplicated_functions <- function_category %>%
+  dplyr::count(function_id, name = "n_categories") %>%
+  dplyr::filter(n_categories > 1)
+
+if (nrow(duplicated_functions) > 0) {
+  
+  preview_table(
+    duplicated_functions,
+    table_name = "duplicated_functions_in_function_category",
+    n = min(20, nrow(duplicated_functions)),
+    max_cols = Inf
+  )
+  
+  stop(
+    "Hay funciones asignadas a más de una categoría. Revisa la tabla función-categoría antes de continuar."
+  )
+  
+} else {
+  log_write(
+    "Verificación correcta: cada función tiene una sola categoría asignada."
+  )
+}
+
+# ============================================================
+# 4.6. Unir tabla MetaCyc con categorías funcionales
+# ============================================================
+
+metacyc_with_category <- metacyc_renamed_samples %>%
+  dplyr::left_join(
+    function_category,
+    by = "function_id"
+  )
+
+preview_table(
+  metacyc_with_category,
+  table_name = "metacyc_with_category",
+  n = 5,
+  max_cols = 8
+)
+
+# ============================================================
+# 4.7. Revisar funciones sin categoría asignada
+# ============================================================
+
+unmatched_functions <- metacyc_with_category %>%
+  dplyr::filter(is.na(Functional_category)) %>%
+  dplyr::select(function_id)
+
+n_unmatched <- nrow(unmatched_functions)
+
+log_write(
+  "Funciones MetaCyc sin categoría asignada después del join: ",
+  n_unmatched
+)
+
+if (n_unmatched > 0) {
+  
+  preview_table(
+    unmatched_functions,
+    table_name = "unmatched_functions",
+    n = min(10, n_unmatched),
+    max_cols = Inf
+  )
+  
+  readr::write_csv(
+    unmatched_functions,
+    file = file.path(dir_tables, "04_unmatched_functions.csv")
+  )
+}
+
+# ============================================================
+# 4.8. Resumen de categorías funcionales
+# ============================================================
+
+category_summary <- metacyc_with_category %>%
+  dplyr::mutate(
+    Functional_category = dplyr::if_else(
+      is.na(Functional_category),
+      "Unclassified",
+      Functional_category
+    )
+  ) %>%
+  dplyr::count(
+    Functional_category,
+    name = "n_functions"
+  ) %>%
+  dplyr::arrange(
+    dplyr::desc(n_functions)
+  )
+
+preview_table(
+  category_summary,
+  table_name = "category_summary",
+  n = nrow(category_summary),
+  max_cols = Inf
+)
+
+# ============================================================
+# 4.9. Separar funciones clasificadas para análisis de violines
+# ============================================================
+# Para la figura principal se excluyen funciones no clasificadas.
+# Esto evita que la categoría "Unclassified" domine visualmente el análisis.
+
+metacyc_classified <- metacyc_with_category %>%
+  dplyr::filter(
+    !is.na(Functional_category),
+    !Functional_category %in% c(
+      "Unclassified",
+      "No clasificada",
+      "No clasificado",
+      "Sin clasificar",
+      "NA"
+    )
+  )
+
+category_summary_classified <- metacyc_classified %>%
+  dplyr::count(
+    Functional_category,
+    name = "n_functions"
+  ) %>%
+  dplyr::arrange(
+    Functional_category
+  )
+
+preview_table(
+  category_summary_classified,
+  table_name = "category_summary_classified",
+  n = nrow(category_summary_classified),
+  max_cols = Inf
+)
+
+log_write(
+  "Número de categorías funcionales clasificadas conservadas para los violines: ",
+  nrow(category_summary_classified)
+)
+
+log_write(
+  "Número de funciones clasificadas conservadas para los violines: ",
+  nrow(metacyc_classified)
+)
+
+# ============================================================
+# 4.10. Revisar dimensiones del bloque
+# ============================================================
+
+tabla_dimensiones_bloque4 <- tibble::tibble(
+  objeto = c(
+    "function_category_raw",
+    "function_category",
+    "metacyc_with_category",
+    "metacyc_classified",
+    "category_summary_classified"
+  ),
+  filas = c(
+    nrow(function_category_raw),
+    nrow(function_category),
+    nrow(metacyc_with_category),
+    nrow(metacyc_classified),
+    nrow(category_summary_classified)
+  ),
+  columnas = c(
+    ncol(function_category_raw),
+    ncol(function_category),
+    ncol(metacyc_with_category),
+    ncol(metacyc_classified),
+    ncol(category_summary_classified)
+  )
+)
+
+preview_table(
+  tabla_dimensiones_bloque4,
+  table_name = "tabla_dimensiones_bloque4",
+  n = nrow(tabla_dimensiones_bloque4),
+  max_cols = Inf
+)
+
+# ============================================================
+# 4.11. Guardar tablas y objetos del bloque
+# ============================================================
+
+readr::write_csv(
+  function_category,
+  file = file.path(dir_tables, "04_function_category_standardized.csv")
+)
+
+readr::write_csv(
+  category_summary,
+  file = file.path(dir_tables, "04_category_summary_all.csv")
+)
+
+readr::write_csv(
+  category_summary_classified,
+  file = file.path(dir_tables, "04_category_summary_classified.csv")
+)
+
+readr::write_csv(
+  tabla_dimensiones_bloque4,
+  file = file.path(dir_tables, "04_tabla_dimensiones_bloque4.csv")
+)
+
+saveRDS(
+  function_category,
+  file = file.path(dir_objects, "04_function_category_standardized.rds")
+)
+
+saveRDS(
+  metacyc_with_category,
+  file = file.path(dir_objects, "04_metacyc_with_category.rds")
+)
+
+saveRDS(
+  metacyc_classified,
+  file = file.path(dir_objects, "04_metacyc_classified.rds")
+)
+
+saveRDS(
+  category_summary_classified,
+  file = file.path(dir_objects, "04_category_summary_classified.rds")
+)
+
+log_write("Bloque 4 completado correctamente.")
+```
+# Bloque 5. Transformar a formato largo y sumar abundancias por categoría
+
+```{r bloque_5_abundancia_por_categoria, message=FALSE, warning=FALSE}
+# ============================================================
+# Bloque 5. Transformar a formato largo y sumar abundancias por categoría
+# ============================================================
+
+log_step(
+  "Bloque 5. Transformar a formato largo y sumar abundancias por categoría",
+  "Se transforma la matriz MetaCyc clasificada a formato largo y se suman las abundancias por muestra y categoría funcional."
+)
+
+# ============================================================
+# 5.1. Transformar tabla clasificada a formato largo
+# ============================================================
+
+metacyc_long <- metacyc_classified %>%
+  tidyr::pivot_longer(
+    cols = dplyr::all_of(sample_cols_renamed),
+    names_to = "Sample",
+    values_to = "Abundance_CPM"
+  )
+
+preview_table(
+  metacyc_long,
+  table_name = "metacyc_long",
+  n = 5,
+  max_cols = 8
+)
+
+log_write(
+  "Tabla MetaCyc en formato largo generada correctamente."
+)
+
+# ============================================================
+# 5.2. Unir metadata de muestras
+# ============================================================
+
+metacyc_long_metadata <- metacyc_long %>%
+  dplyr::left_join(
+    sample_metadata %>%
+      dplyr::select(
+        Sample,
+        Quadrant,
+        Replicate,
+        Desert_code,
+        Desert
+      ),
+    by = "Sample"
+  )
+
+preview_table(
+  metacyc_long_metadata,
+  table_name = "metacyc_long_metadata",
+  n = 5,
+  max_cols = 10
+)
+
+# ============================================================
+# 5.3. Verificar que no haya muestras sin metadata
+# ============================================================
+
+missing_metadata <- metacyc_long_metadata %>%
+  dplyr::filter(
+    is.na(Desert_code) | is.na(Desert)
+  ) %>%
+  dplyr::distinct(Sample)
+
+if (nrow(missing_metadata) > 0) {
+  
+  preview_table(
+    missing_metadata,
+    table_name = "missing_metadata",
+    n = nrow(missing_metadata),
+    max_cols = Inf
+  )
+  
+  stop(
+    "Hay muestras sin metadata después del join. Revisa sample_metadata."
+  )
+  
+} else {
+  log_write(
+    "Verificación correcta: todas las abundancias tienen metadata de muestra."
+  )
+}
+
+# ============================================================
+# 5.4. Sumar abundancia por muestra y categoría funcional
+# ============================================================
+# Cada valor representa la abundancia total CPM de una categoría funcional
+# dentro de una muestra.
+
+category_abundance_long <- metacyc_long_metadata %>%
+  dplyr::group_by(
+    Sample,
+    Quadrant,
+    Replicate,
+    Desert_code,
+    Desert,
+    Functional_category
+  ) %>%
+  dplyr::summarise(
+    Category_abundance_CPM = sum(Abundance_CPM, na.rm = TRUE),
+    n_functions_in_category = dplyr::n_distinct(function_id),
+    n_nonzero_functions = sum(Abundance_CPM > 0, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+preview_table(
+  category_abundance_long,
+  table_name = "category_abundance_long",
+  n = 10,
+  max_cols = Inf
+)
+
+# ============================================================
+# 5.5. Verificar número esperado de combinaciones muestra-categoría
+# ============================================================
+
+n_samples_expected <- nrow(sample_metadata)
+n_categories_expected <- nrow(category_summary_classified)
+
+n_rows_expected <- n_samples_expected * n_categories_expected
+n_rows_observed <- nrow(category_abundance_long)
+
+tabla_combinaciones_bloque5 <- tibble::tibble(
+  elemento = c(
+    "Número esperado de muestras",
+    "Número esperado de categorías",
+    "Combinaciones esperadas muestra-categoría",
+    "Combinaciones observadas muestra-categoría"
+  ),
+  valor = c(
+    n_samples_expected,
+    n_categories_expected,
+    n_rows_expected,
+    n_rows_observed
+  )
+)
+
+preview_table(
+  tabla_combinaciones_bloque5,
+  table_name = "tabla_combinaciones_bloque5",
+  n = nrow(tabla_combinaciones_bloque5),
+  max_cols = Inf
+)
+
+if (n_rows_observed != n_rows_expected) {
+  log_write(
+    "Advertencia: el número observado de combinaciones muestra-categoría no coincide con el esperado."
+  )
+} else {
+  log_write(
+    "Verificación correcta: están presentes todas las combinaciones muestra-categoría esperadas."
+  )
+}
+
+# ============================================================
+# 5.6. Revisar abundancias cero y rango de abundancias
+# ============================================================
+
+category_abundance_summary <- category_abundance_long %>%
+  dplyr::summarise(
+    n_rows = dplyr::n(),
+    n_zero_abundance = sum(Category_abundance_CPM == 0, na.rm = TRUE),
+    min_abundance = min(Category_abundance_CPM, na.rm = TRUE),
+    median_abundance = median(Category_abundance_CPM, na.rm = TRUE),
+    mean_abundance = mean(Category_abundance_CPM, na.rm = TRUE),
+    max_abundance = max(Category_abundance_CPM, na.rm = TRUE)
+  )
+
+preview_table(
+  category_abundance_summary,
+  table_name = "category_abundance_summary",
+  n = 1,
+  max_cols = Inf
+)
+
+# ============================================================
+# 5.7. Resumen por categoría funcional
+# ============================================================
+
+category_level_summary <- category_abundance_long %>%
+  dplyr::group_by(Functional_category) %>%
+  dplyr::summarise(
+    n_samples = dplyr::n(),
+    mean_CPM = mean(Category_abundance_CPM, na.rm = TRUE),
+    median_CPM = median(Category_abundance_CPM, na.rm = TRUE),
+    min_CPM = min(Category_abundance_CPM, na.rm = TRUE),
+    max_CPM = max(Category_abundance_CPM, na.rm = TRUE),
+    n_zero_samples = sum(Category_abundance_CPM == 0, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::arrange(
+    dplyr::desc(mean_CPM)
+  )
+
+preview_table(
+  category_level_summary,
+  table_name = "category_level_summary",
+  n = nrow(category_level_summary),
+  max_cols = Inf
+)
+
+# ============================================================
+# 5.8. Resumen por desierto y categoría funcional
+# ============================================================
+
+category_desert_summary <- category_abundance_long %>%
+  dplyr::group_by(
+    Functional_category,
+    Desert_code,
+    Desert
+  ) %>%
+  dplyr::summarise(
+    n_samples = dplyr::n(),
+    mean_CPM = mean(Category_abundance_CPM, na.rm = TRUE),
+    median_CPM = median(Category_abundance_CPM, na.rm = TRUE),
+    sd_CPM = sd(Category_abundance_CPM, na.rm = TRUE),
+    min_CPM = min(Category_abundance_CPM, na.rm = TRUE),
+    max_CPM = max(Category_abundance_CPM, na.rm = TRUE),
+    n_zero_samples = sum(Category_abundance_CPM == 0, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::arrange(
+    Functional_category,
+    Desert_code
+  )
+
+preview_table(
+  category_desert_summary,
+  table_name = "category_desert_summary",
+  n = 10,
+  max_cols = Inf
+)
+
+# ============================================================
+# 5.9. Guardar tablas y objetos del bloque
+# ============================================================
+
+readr::write_csv(
+  category_abundance_long,
+  file = file.path(dir_tables, "05_category_abundance_long.csv")
+)
+
+readr::write_csv(
+  tabla_combinaciones_bloque5,
+  file = file.path(dir_tables, "05_tabla_combinaciones_bloque5.csv")
+)
+
+readr::write_csv(
+  category_abundance_summary,
+  file = file.path(dir_tables, "05_category_abundance_summary.csv")
+)
+
+readr::write_csv(
+  category_level_summary,
+  file = file.path(dir_tables, "05_category_level_summary.csv")
+)
+
+readr::write_csv(
+  category_desert_summary,
+  file = file.path(dir_tables, "05_category_desert_summary.csv")
+)
+
+saveRDS(
+  metacyc_long,
+  file = file.path(dir_objects, "05_metacyc_long.rds")
+)
+
+saveRDS(
+  metacyc_long_metadata,
+  file = file.path(dir_objects, "05_metacyc_long_metadata.rds")
+)
+
+saveRDS(
+  category_abundance_long,
+  file = file.path(dir_objects, "05_category_abundance_long.rds")
+)
+
+saveRDS(
+  category_level_summary,
+  file = file.path(dir_objects, "05_category_level_summary.rds")
+)
+
+saveRDS(
+  category_desert_summary,
+  file = file.path(dir_objects, "05_category_desert_summary.rds")
+)
+
+log_write("Bloque 5 completado correctamente.")
+```
+# Bloque 6. Estadística por categoría funcional
+
+```{r bloque_6_estadistica_por_categoria, message=FALSE, warning=FALSE}
+# ============================================================
+# Bloque 6. Estadística por categoría funcional
+# ============================================================
+
+log_step(
+  "Bloque 6. Estadística por categoría funcional",
+  "Se comparan las abundancias funcionales entre desiertos mediante Wilcoxon rank-sum, corrección FDR y Cliff's delta."
+)
+
+# ============================================================
+# 6.1. Verificar que cada categoría tenga datos en ambos desiertos
+# ============================================================
+
+category_group_check <- category_abundance_long %>%
+  dplyr::group_by(
+    Functional_category,
+    Desert_code
+  ) %>%
+  dplyr::summarise(
+    n_samples = dplyr::n(),
+    n_finite = sum(is.finite(Category_abundance_CPM)),
+    .groups = "drop"
+  ) %>%
+  tidyr::pivot_wider(
+    names_from = Desert_code,
+    values_from = c(n_samples, n_finite),
+    values_fill = 0
+  )
+
+preview_table(
+  category_group_check,
+  table_name = "category_group_check",
+  n = nrow(category_group_check),
+  max_cols = Inf
+)
+
+bad_categories <- category_group_check %>%
+  dplyr::filter(
+    n_samples_CC == 0 |
+      n_samples_VG == 0 |
+      n_finite_CC == 0 |
+      n_finite_VG == 0
+  )
+
+if (nrow(bad_categories) > 0) {
+  
+  preview_table(
+    bad_categories,
+    table_name = "bad_categories_for_statistics",
+    n = nrow(bad_categories),
+    max_cols = Inf
+  )
+  
+  stop(
+    "Hay categorías sin datos suficientes en uno de los desiertos. Revisa antes de continuar."
+  )
+  
+} else {
+  log_write(
+    "Verificación correcta: todas las categorías tienen datos finitos en ambos desiertos."
+  )
+}
+
+# ============================================================
+# 6.2. Estadística Wilcoxon + Cliff's delta
+# ============================================================
+# Nota:
+# diff_mean_CPM = media_VG - media_CC
+# cliffs_delta_VG_vs_CC > 0 indica mayor abundancia en VG.
+# cliffs_delta_VG_vs_CC < 0 indica mayor abundancia en CC.
+
+category_statistics <- category_abundance_long %>%
+  dplyr::group_by(Functional_category) %>%
+  dplyr::summarise(
+    n_CC = sum(Desert_code == "CC"),
+    n_VG = sum(Desert_code == "VG"),
+    
+    mean_CPM_CC = mean(
+      Category_abundance_CPM[Desert_code == "CC"],
+      na.rm = TRUE
+    ),
+    mean_CPM_VG = mean(
+      Category_abundance_CPM[Desert_code == "VG"],
+      na.rm = TRUE
+    ),
+    median_CPM_CC = median(
+      Category_abundance_CPM[Desert_code == "CC"],
+      na.rm = TRUE
+    ),
+    median_CPM_VG = median(
+      Category_abundance_CPM[Desert_code == "VG"],
+      na.rm = TRUE
+    ),
+    
+    diff_mean_CPM_VG_minus_CC = mean_CPM_VG - mean_CPM_CC,
+    log2FC_VG_vs_CC = log2((mean_CPM_VG + 1) / (mean_CPM_CC + 1)),
+    
+    p_value = wilcox.test(
+      Category_abundance_CPM[Desert_code == "VG"],
+      Category_abundance_CPM[Desert_code == "CC"],
+      exact = FALSE
+    )$p.value,
+    
+    cliffs_delta_VG_vs_CC = cliffs_delta_manual(
+      x = Category_abundance_CPM[Desert_code == "VG"],
+      y = Category_abundance_CPM[Desert_code == "CC"]
+    ),
+    
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    q_value = p.adjust(p_value, method = "BH"),
+    significance = significance_label(q_value),
+    significant_FDR_0.05 = q_value < 0.05,
+    cliffs_delta_magnitude = classify_cliffs_delta(cliffs_delta_VG_vs_CC),
+    enriched_desert = dplyr::case_when(
+      diff_mean_CPM_VG_minus_CC > 0 ~ "Valle de Guadalupe",
+      diff_mean_CPM_VG_minus_CC < 0 ~ "Cuatro Ciénegas",
+      TRUE ~ "No difference in mean"
+    )
+  ) %>%
+  dplyr::arrange(q_value, dplyr::desc(abs(cliffs_delta_VG_vs_CC)))
+
+preview_table(
+  category_statistics,
+  table_name = "category_statistics",
+  n = nrow(category_statistics),
+  max_cols = Inf
+)
+
+# ============================================================
+# 6.3. Resumen de significancia
+# ============================================================
+
+statistics_summary <- category_statistics %>%
+  dplyr::summarise(
+    n_categories_tested = dplyr::n(),
+    n_significant_FDR_0.05 = sum(significant_FDR_0.05, na.rm = TRUE),
+    n_enriched_CC = sum(enriched_desert == "Cuatro Ciénegas", na.rm = TRUE),
+    n_enriched_VG = sum(enriched_desert == "Valle de Guadalupe", na.rm = TRUE),
+    min_p_value = min(p_value, na.rm = TRUE),
+    min_q_value = min(q_value, na.rm = TRUE)
+  )
+
+preview_table(
+  statistics_summary,
+  table_name = "statistics_summary",
+  n = 1,
+  max_cols = Inf
+)
+
+# ============================================================
+# 6.4. Crear etiquetas para facetas de la figura
+# ============================================================
+# Estas etiquetas se usarán después en los títulos de cada panel.
+# Si una categoría es significativa después de FDR, se agrega *, ** o ***.
+
+category_facet_labels <- category_statistics %>%
+  dplyr::mutate(
+    facet_label = dplyr::case_when(
+      significance != "" ~ paste0(Functional_category, " ", significance),
+      TRUE ~ Functional_category
+    )
+  ) %>%
+  dplyr::select(
+    Functional_category,
+    facet_label,
+    p_value,
+    q_value,
+    significance,
+    significant_FDR_0.05,
+    cliffs_delta_VG_vs_CC,
+    cliffs_delta_magnitude,
+    enriched_desert
+  )
+
+preview_table(
+  category_facet_labels,
+  table_name = "category_facet_labels",
+  n = nrow(category_facet_labels),
+  max_cols = Inf
+)
+
+# ============================================================
+# 6.5. Integrar estadísticos a la tabla larga de abundancia
+# ============================================================
+
+category_abundance_stats <- category_abundance_long %>%
+  dplyr::left_join(
+    category_facet_labels,
+    by = "Functional_category"
+  ) %>%
+  dplyr::mutate(
+    Category_abundance_log10 = log10(Category_abundance_CPM + 1)
+  )
+
+preview_table(
+  category_abundance_stats,
+  table_name = "category_abundance_stats",
+  n = 10,
+  max_cols = Inf
+)
+
+# ============================================================
+# 6.6. Guardar tablas y objetos del bloque
+# ============================================================
+
+readr::write_csv(
+  category_group_check,
+  file = file.path(dir_stats, "06_category_group_check.csv")
+)
+
+readr::write_csv(
+  category_statistics,
+  file = file.path(dir_stats, "06_category_statistics_wilcoxon_fdr_cliffs_delta.csv")
+)
+
+readr::write_csv(
+  statistics_summary,
+  file = file.path(dir_stats, "06_statistics_summary.csv")
+)
+
+readr::write_csv(
+  category_facet_labels,
+  file = file.path(dir_tables, "06_category_facet_labels.csv")
+)
+
+readr::write_csv(
+  category_abundance_stats,
+  file = file.path(dir_tables, "06_category_abundance_stats.csv")
+)
+
+saveRDS(
+  category_statistics,
+  file = file.path(dir_objects, "06_category_statistics.rds")
+)
+
+saveRDS(
+  statistics_summary,
+  file = file.path(dir_objects, "06_statistics_summary.rds")
+)
+
+saveRDS(
+  category_facet_labels,
+  file = file.path(dir_objects, "06_category_facet_labels.rds")
+)
+
+saveRDS(
+  category_abundance_stats,
+  file = file.path(dir_objects, "06_category_abundance_stats.rds")
+)
+
+log_write("Bloque 6 completado correctamente.")
+```
+# Bloque 7. Preparar datos bilingües para gráficos de violín
+
+```{r bloque_7_preparar_datos_bilingues_figura, message=FALSE, warning=FALSE}
+# ============================================================
+# Bloque 7. Preparar datos bilingües para gráficos de violín
+# ============================================================
+
+log_step(
+  "Bloque 7. Preparar datos bilingües para gráficos de violín",
+  "Se preparan etiquetas y tablas finales para generar dos figuras en inglés y sus equivalentes en español."
+)
+
+# ============================================================
+# 7.1. Revisar categorías funcionales disponibles
+# ============================================================
+
+functional_categories_detected <- category_abundance_stats %>%
+  dplyr::distinct(Functional_category) %>%
+  dplyr::arrange(Functional_category)
+
+preview_table(
+  functional_categories_detected,
+  table_name = "functional_categories_detected",
+  n = nrow(functional_categories_detected),
+  max_cols = Inf
+)
+
+# ============================================================
+# 7.2. Diccionario bilingüe de categorías funcionales
+# ============================================================
+# La tabla original conservada del heatmap tiene categorías en español.
+# Aquí generamos etiquetas equivalentes en inglés para publicación
+# y conservamos etiquetas en español para la versión en español.
+
+category_language_dictionary <- functional_categories_detected %>%
+  dplyr::mutate(
+    
+    Functional_category_en = dplyr::case_when(
+      
+      Functional_category == "Metabolismo del fósforo" ~ "Phosphorus metabolism",
+      Functional_category == "Fermentación" ~ "Fermentation",
+      Functional_category == "Respiración y transporte de electrones" ~ "Respiration and electron transport",
+      Functional_category == "Metabolismo de compuestos aromáticos" ~ "Aromatic compound metabolism",
+      Functional_category == "Aminoácidos: biosíntesis" ~ "Amino acid biosynthesis",
+      Functional_category == "Protección UV" ~ "UV protection",
+      Functional_category == "Nucleótidos" ~ "Nucleotides",
+      Functional_category == "Vitaminas y cofactores" ~ "Vitamins and cofactors",
+      Functional_category == "Metabolismo del nitrógeno" ~ "Nitrogen metabolism",
+      Functional_category == "Metabolismo de metano y C1" ~ "Methane and C1 metabolism",
+      Functional_category == "Metabolismo del azufre" ~ "Sulfur metabolism",
+      Functional_category == "Pared celular y polisacáridos" ~ "Cell wall and polysaccharides",
+      Functional_category == "Biofilm y adhesión" ~ "Biofilm and adhesion",
+      Functional_category == "Aminoácidos: degradación" ~ "Amino acid degradation",
+      Functional_category == "Glucólisis y metabolismo central" ~ "Glycolysis and central metabolism",
+      Functional_category == "Estrés oxidativo y respuesta ambiental" ~ "Oxidative stress and environmental response",
+      Functional_category == "Fotosíntesis y pigmentos" ~ "Photosynthesis and pigments",
+      Functional_category == "Otras funciones o no clasificadas" ~ "Other or unclassified functions",
+      Functional_category == "Otros o no clasificados" ~ "Other or unclassified functions",
+      Functional_category == "Other or unclassified functions" ~ "Other or unclassified functions",
+      
+      TRUE ~ Functional_category
+    ),
+    
+    Functional_category_es = dplyr::case_when(
+      
+      Functional_category == "Metabolismo del fósforo" ~ "Metabolismo del fósforo",
+      Functional_category == "Fermentación" ~ "Fermentación",
+      Functional_category == "Respiración y transporte de electrones" ~ "Respiración y transporte de electrones",
+      Functional_category == "Metabolismo de compuestos aromáticos" ~ "Metabolismo de compuestos aromáticos",
+      Functional_category == "Aminoácidos: biosíntesis" ~ "Aminoácidos: biosíntesis",
+      Functional_category == "Protección UV" ~ "Protección UV",
+      Functional_category == "Nucleótidos" ~ "Nucleótidos",
+      Functional_category == "Vitaminas y cofactores" ~ "Vitaminas y cofactores",
+      Functional_category == "Metabolismo del nitrógeno" ~ "Metabolismo del nitrógeno",
+      Functional_category == "Metabolismo de metano y C1" ~ "Metabolismo de metano y C1",
+      Functional_category == "Metabolismo del azufre" ~ "Metabolismo del azufre",
+      Functional_category == "Pared celular y polisacáridos" ~ "Pared celular y polisacáridos",
+      Functional_category == "Biofilm y adhesión" ~ "Biofilm y adhesión",
+      Functional_category == "Aminoácidos: degradación" ~ "Aminoácidos: degradación",
+      Functional_category == "Glucólisis y metabolismo central" ~ "Glucólisis y metabolismo central",
+      Functional_category == "Estrés oxidativo y respuesta ambiental" ~ "Estrés oxidativo y respuesta ambiental",
+      Functional_category == "Fotosíntesis y pigmentos" ~ "Fotosíntesis y pigmentos",
+      Functional_category == "Otras funciones o no clasificadas" ~ "Otras funciones o no clasificadas",
+      Functional_category == "Otros o no clasificados" ~ "Otras funciones o no clasificadas",
+      Functional_category == "Other or unclassified functions" ~ "Otras funciones o no clasificadas",
+      
+      TRUE ~ Functional_category
+    )
+  )
+
+preview_table(
+  category_language_dictionary,
+  table_name = "category_language_dictionary",
+  n = nrow(category_language_dictionary),
+  max_cols = Inf
+)
+
+# Verificar si quedaron categorías sin traducir al inglés
+untranslated_categories <- category_language_dictionary %>%
+  dplyr::filter(
+    Functional_category_en == Functional_category &
+      !Functional_category %in% c(
+        "Phosphorus metabolism",
+        "Fermentation",
+        "Respiration and electron transport",
+        "Aromatic compound metabolism",
+        "Amino acid biosynthesis",
+        "UV protection",
+        "Nucleotides",
+        "Vitamins and cofactors",
+        "Nitrogen metabolism",
+        "Methane and C1 metabolism",
+        "Sulfur metabolism",
+        "Cell wall and polysaccharides",
+        "Biofilm and adhesion",
+        "Amino acid degradation",
+        "Glycolysis and central metabolism",
+        "Oxidative stress and environmental response",
+        "Photosynthesis and pigments",
+        "Other or unclassified functions"
+      )
+  )
+
+if (nrow(untranslated_categories) > 0) {
+  
+  preview_table(
+    untranslated_categories,
+    table_name = "untranslated_categories_check",
+    n = nrow(untranslated_categories),
+    max_cols = Inf
+  )
+  
+  log_write(
+    "Advertencia: hay categorías que no fueron traducidas automáticamente. Revisar untranslated_categories_check."
+  )
+  
+} else {
+  log_write(
+    "Verificación correcta: todas las categorías tienen etiquetas en inglés y español."
+  )
+}
+
+# Guardamos este diccionario para revisión manual
+readr::write_csv(
+  category_language_dictionary,
+  file = file.path(dir_tables, "07_category_language_dictionary.csv")
+)
+# ============================================================
+# 7.3. Definir orden de categorías para la figura
+# ============================================================
+# Las categorías se ordenan por abundancia promedio log10 descendente.
+# Este orden se usará en inglés y español.
+
+category_plot_order <- category_abundance_stats %>%
+  dplyr::group_by(Functional_category) %>%
+  dplyr::summarise(
+    mean_log10_abundance = mean(Category_abundance_log10, na.rm = TRUE),
+    mean_CPM = mean(Category_abundance_CPM, na.rm = TRUE),
+    q_value = dplyr::first(q_value),
+    significance = dplyr::first(significance),
+    .groups = "drop"
+  ) %>%
+  dplyr::arrange(
+    dplyr::desc(mean_log10_abundance)
+  )
+
+preview_table(
+  category_plot_order,
+  table_name = "category_plot_order",
+  n = nrow(category_plot_order),
+  max_cols = Inf
+)
+
+category_order_vector <- category_plot_order$Functional_category
+
+# ============================================================
+# 7.4. Preparar etiquetas de facetas en inglés
+# ============================================================
+
+facet_label_table_en <- category_facet_labels %>%
+  dplyr::left_join(
+    category_language_dictionary %>%
+      dplyr::select(
+        Functional_category,
+        Functional_category_en
+      ),
+    by = "Functional_category"
+  ) %>%
+  dplyr::mutate(
+    facet_label_clean_en = dplyr::case_when(
+      significance != "" ~ paste0(Functional_category_en, " ", significance),
+      TRUE ~ Functional_category_en
+    ),
+    facet_label_wrapped_en = stringr::str_wrap(
+      facet_label_clean_en,
+      width = 28
+    )
+  ) %>%
+  dplyr::select(
+    Functional_category,
+    Functional_category_en,
+    facet_label_clean_en,
+    facet_label_wrapped_en,
+    p_value,
+    q_value,
+    significance,
+    significant_FDR_0.05,
+    cliffs_delta_VG_vs_CC,
+    cliffs_delta_magnitude,
+    enriched_desert
+  )
+
+preview_table(
+  facet_label_table_en,
+  table_name = "facet_label_table_en",
+  n = nrow(facet_label_table_en),
+  max_cols = Inf
+)
+
+# ============================================================
+# 7.5. Preparar etiquetas de facetas en español
+# ============================================================
+
+facet_label_table_es <- category_facet_labels %>%
+  dplyr::left_join(
+    category_language_dictionary %>%
+      dplyr::select(
+        Functional_category,
+        Functional_category_es
+      ),
+    by = "Functional_category"
+  ) %>%
+  dplyr::mutate(
+    facet_label_clean_es = dplyr::case_when(
+      significance != "" ~ paste0(Functional_category_es, " ", significance),
+      TRUE ~ Functional_category_es
+    ),
+    facet_label_wrapped_es = stringr::str_wrap(
+      facet_label_clean_es,
+      width = 28
+    )
+  ) %>%
+  dplyr::select(
+    Functional_category,
+    Functional_category_es,
+    facet_label_clean_es,
+    facet_label_wrapped_es,
+    p_value,
+    q_value,
+    significance,
+    significant_FDR_0.05,
+    cliffs_delta_VG_vs_CC,
+    cliffs_delta_magnitude,
+    enriched_desert
+  )
+
+preview_table(
+  facet_label_table_es,
+  table_name = "facet_label_table_es",
+  n = nrow(facet_label_table_es),
+  max_cols = Inf
+)
+
+# ============================================================
+# 7.6. Construir tabla final para figuras en inglés
+# ============================================================
+
+violin_plot_data_en <- category_abundance_stats %>%
+  dplyr::left_join(
+    facet_label_table_en %>%
+      dplyr::select(
+        Functional_category,
+        Functional_category_en,
+        facet_label_clean_en,
+        facet_label_wrapped_en
+      ),
+    by = "Functional_category"
+  ) %>%
+  dplyr::mutate(
+    Functional_category = factor(
+      Functional_category,
+      levels = category_order_vector
+    ),
+    facet_label_wrapped_en = factor(
+      facet_label_wrapped_en,
+      levels = facet_label_table_en$facet_label_wrapped_en[
+        match(category_order_vector, facet_label_table_en$Functional_category)
+      ]
+    ),
+    Desert = factor(
+      Desert,
+      levels = c(
+        "Cuatro Ciénegas",
+        "Valle de Guadalupe"
+      )
+    ),
+    Desert_code = factor(
+      Desert_code,
+      levels = c("CC", "VG")
+    )
+  )
+
+preview_table(
+  violin_plot_data_en,
+  table_name = "violin_plot_data_en",
+  n = 10,
+  max_cols = Inf
+)
+
+# ============================================================
+# 7.7. Construir tabla final para figuras en español
+# ============================================================
+
+violin_plot_data_es <- category_abundance_stats %>%
+  dplyr::left_join(
+    facet_label_table_es %>%
+      dplyr::select(
+        Functional_category,
+        Functional_category_es,
+        facet_label_clean_es,
+        facet_label_wrapped_es
+      ),
+    by = "Functional_category"
+  ) %>%
+  dplyr::mutate(
+    Functional_category = factor(
+      Functional_category,
+      levels = category_order_vector
+    ),
+    facet_label_wrapped_es = factor(
+      facet_label_wrapped_es,
+      levels = facet_label_table_es$facet_label_wrapped_es[
+        match(category_order_vector, facet_label_table_es$Functional_category)
+      ]
+    ),
+    Desierto = dplyr::case_when(
+      Desert_code == "CC" ~ "Cuatro Ciénegas",
+      Desert_code == "VG" ~ "Valle de Guadalupe",
+      TRUE ~ as.character(Desert)
+    ),
+    Desierto = factor(
+      Desierto,
+      levels = c(
+        "Cuatro Ciénegas",
+        "Valle de Guadalupe"
+      )
+    ),
+    Desert_code = factor(
+      Desert_code,
+      levels = c("CC", "VG")
+    )
+  )
+
+preview_table(
+  violin_plot_data_es,
+  table_name = "violin_plot_data_es",
+  n = 10,
+  max_cols = Inf
+)
+
+# ============================================================
+# 7.8. Verificar dimensiones esperadas
+# ============================================================
+
+n_expected_violin_rows <- nrow(sample_metadata) * nrow(category_summary_classified)
+
+tabla_verificacion_violin_data <- tibble::tibble(
+  dataset = c(
+    "violin_plot_data_en",
+    "violin_plot_data_es"
+  ),
+  filas_observadas = c(
+    nrow(violin_plot_data_en),
+    nrow(violin_plot_data_es)
+  ),
+  filas_esperadas = c(
+    n_expected_violin_rows,
+    n_expected_violin_rows
+  ),
+  categorias_funcionales = c(
+    nrow(category_summary_classified),
+    nrow(category_summary_classified)
+  ),
+  categorias_significativas_FDR_0.05 = c(
+    sum(category_statistics$significant_FDR_0.05, na.rm = TRUE),
+    sum(category_statistics$significant_FDR_0.05, na.rm = TRUE)
+  )
+)
+
+preview_table(
+  tabla_verificacion_violin_data,
+  table_name = "tabla_verificacion_violin_data",
+  n = nrow(tabla_verificacion_violin_data),
+  max_cols = Inf
+)
+
+if (any(tabla_verificacion_violin_data$filas_observadas != tabla_verificacion_violin_data$filas_esperadas)) {
+  stop(
+    "El número de filas para alguna tabla de figura no coincide con lo esperado."
+  )
+} else {
+  log_write(
+    "Verificación correcta: las tablas finales en inglés y español tienen el número esperado de filas."
+  )
+}
+
+# ============================================================
+# 7.9. Preparar subconjuntos para Figura 2
+# ============================================================
+# Figura 1: todas las categorías.
+# Figura 2: categorías significativas después de FDR.
+# Si no hubiera categorías significativas, se usará una selección por mayor tamaño de efecto.
+
+significant_categories <- category_statistics %>%
+  dplyr::filter(significant_FDR_0.05) %>%
+  dplyr::pull(Functional_category)
+
+if (length(significant_categories) == 0) {
+  
+  log_write(
+    "No hubo categorías significativas FDR < 0.05. ",
+    "Para Figura 2 se usarán las 8 categorías con mayor tamaño de efecto absoluto."
+  )
+  
+  figure2_categories <- category_statistics %>%
+    dplyr::arrange(dplyr::desc(abs(cliffs_delta_VG_vs_CC))) %>%
+    dplyr::slice_head(n = 8) %>%
+    dplyr::pull(Functional_category)
+  
+} else {
+  
+  log_write(
+    "Para Figura 2 se usarán las categorías significativas FDR < 0.05."
+  )
+  
+  figure2_categories <- significant_categories
+}
+
+figure2_category_table <- category_statistics %>%
+  dplyr::filter(Functional_category %in% figure2_categories) %>%
+  dplyr::arrange(q_value, dplyr::desc(abs(cliffs_delta_VG_vs_CC)))
+
+preview_table(
+  figure2_category_table,
+  table_name = "figure2_category_table",
+  n = nrow(figure2_category_table),
+  max_cols = Inf
+)
+
+violin_plot_data_en_fig2 <- violin_plot_data_en %>%
+  dplyr::filter(
+    Functional_category %in% figure2_categories
+  )
+
+violin_plot_data_es_fig2 <- violin_plot_data_es %>%
+  dplyr::filter(
+    Functional_category %in% figure2_categories
+  )
+
+# ============================================================
+# 7.10. Verificar abundancias log10
+# ============================================================
+
+log10_summary <- violin_plot_data_en %>%
+  dplyr::summarise(
+    n_rows = dplyr::n(),
+    min_log10 = min(Category_abundance_log10, na.rm = TRUE),
+    median_log10 = median(Category_abundance_log10, na.rm = TRUE),
+    mean_log10 = mean(Category_abundance_log10, na.rm = TRUE),
+    max_log10 = max(Category_abundance_log10, na.rm = TRUE),
+    n_non_finite_log10 = sum(!is.finite(Category_abundance_log10))
+  )
+
+preview_table(
+  log10_summary,
+  table_name = "log10_summary",
+  n = 1,
+  max_cols = Inf
+)
+
+if (log10_summary$n_non_finite_log10 > 0) {
+  stop(
+    "Hay valores no finitos en Category_abundance_log10. Revisa los datos antes de graficar."
+  )
+} else {
+  log_write(
+    "Verificación correcta: todos los valores log10 son finitos."
+  )
+}
+
+# ============================================================
+# 7.11. Guardar tablas y objetos del bloque
+# ============================================================
+
+readr::write_csv(
+  category_language_dictionary,
+  file = file.path(dir_tables, "07_category_language_dictionary.csv")
+)
+
+readr::write_csv(
+  category_plot_order,
+  file = file.path(dir_tables, "07_category_plot_order.csv")
+)
+
+readr::write_csv(
+  facet_label_table_en,
+  file = file.path(dir_tables, "07_facet_label_table_en.csv")
+)
+
+readr::write_csv(
+  facet_label_table_es,
+  file = file.path(dir_tables, "07_facet_label_table_es.csv")
+)
+
+readr::write_csv(
+  violin_plot_data_en,
+  file = file.path(dir_tables, "07_violin_plot_data_en.csv")
+)
+
+readr::write_csv(
+  violin_plot_data_es,
+  file = file.path(dir_tables, "07_violin_plot_data_es.csv")
+)
+
+readr::write_csv(
+  violin_plot_data_en_fig2,
+  file = file.path(dir_tables, "07_violin_plot_data_en_fig2.csv")
+)
+
+readr::write_csv(
+  violin_plot_data_es_fig2,
+  file = file.path(dir_tables, "07_violin_plot_data_es_fig2.csv")
+)
+
+readr::write_csv(
+  figure2_category_table,
+  file = file.path(dir_tables, "07_figure2_category_table.csv")
+)
+
+readr::write_csv(
+  tabla_verificacion_violin_data,
+  file = file.path(dir_tables, "07_tabla_verificacion_violin_data.csv")
+)
+
+readr::write_csv(
+  log10_summary,
+  file = file.path(dir_tables, "07_log10_summary.csv")
+)
+
+saveRDS(
+  category_language_dictionary,
+  file = file.path(dir_objects, "07_category_language_dictionary.rds")
+)
+
+saveRDS(
+  category_plot_order,
+  file = file.path(dir_objects, "07_category_plot_order.rds")
+)
+
+saveRDS(
+  facet_label_table_en,
+  file = file.path(dir_objects, "07_facet_label_table_en.rds")
+)
+
+saveRDS(
+  facet_label_table_es,
+  file = file.path(dir_objects, "07_facet_label_table_es.rds")
+)
+
+saveRDS(
+  violin_plot_data_en,
+  file = file.path(dir_objects, "07_violin_plot_data_en.rds")
+)
+
+saveRDS(
+  violin_plot_data_es,
+  file = file.path(dir_objects, "07_violin_plot_data_es.rds")
+)
+
+saveRDS(
+  violin_plot_data_en_fig2,
+  file = file.path(dir_objects, "07_violin_plot_data_en_fig2.rds")
+)
+
+saveRDS(
+  violin_plot_data_es_fig2,
+  file = file.path(dir_objects, "07_violin_plot_data_es_fig2.rds")
+)
+
+saveRDS(
+  figure2_category_table,
+  file = file.path(dir_objects, "07_figure2_category_table.rds")
+)
+
+saveRDS(
+  category_order_vector,
+  file = file.path(dir_objects, "07_category_order_vector.rds")
+)
+
+log_write("Bloque 7 completado correctamente.")
+```
+```{r}
+category_language_dictionary
+```
+```{r}
+violin_plot_data_en <- violin_plot_data_en %>%
+  dplyr::mutate(
+    Category_abundance_plot = Category_abundance_CPM + 1
+  )
+
+violin_plot_data_es <- violin_plot_data_es %>%
+  dplyr::mutate(
+    Category_abundance_plot = Category_abundance_CPM + 1
+  )
+
+violin_plot_data_en_fig2 <- violin_plot_data_en_fig2 %>%
+  dplyr::mutate(
+    Category_abundance_plot = Category_abundance_CPM + 1
+  )
+
+violin_plot_data_es_fig2 <- violin_plot_data_es_fig2 %>%
+  dplyr::mutate(
+    Category_abundance_plot = Category_abundance_CPM + 1
+  )
+```
+
+# Bloque 8. Generar figuras de violín en inglés y español
+
+```{r bloque_8_generar_figuras_violin, message=FALSE, warning=FALSE}
+# ============================================================
+# Bloque 8. Generar figuras de violín en inglés y español
+# ============================================================
+
+log_step(
+  "Bloque 8. Generar figuras de violín en inglés y español",
+  "Se generan dos figuras de publicación en inglés y sus equivalentes en español."
+)
+
+# ============================================================
+# 8.1. Colores de desiertos
+# ============================================================
+
+desert_colors <- c(
+  "Cuatro Ciénegas" = "#E9A4A0",
+  "Valle de Guadalupe" = "mediumaquamarine"
+)
+
+# ============================================================
+# 8.2. Preparar datos finales para evitar niveles vacíos
+# ============================================================
+
+violin_plot_data_en <- droplevels(violin_plot_data_en)
+violin_plot_data_es <- droplevels(violin_plot_data_es)
+violin_plot_data_en_fig2 <- droplevels(violin_plot_data_en_fig2)
+violin_plot_data_es_fig2 <- droplevels(violin_plot_data_es_fig2)
+
+# ============================================================
+# 8.3. Función para construir figura en inglés
+# ============================================================
+make_violin_plot_en <- function(data, facet_var, figure_type = "all") {
+  
+  p <- ggplot(
+    data,
+    aes(
+      x = Desert_code,
+      y = Category_abundance_plot,
+      fill = Desert_code
+    )
+  ) +
+    geom_violin(
+      trim = FALSE,
+      alpha = 0.65,
+      color = NA
+    ) +
+    geom_boxplot(
+      width = 0.10,
+      outlier.shape = NA,
+      fill = "white",
+      color = "black",
+      linewidth = 0.5
+    ) +
+    facet_wrap(
+      stats::as.formula(paste("~", facet_var)),
+      ncol = ifelse(figure_type == "all", 4, 4),
+      scales = "free_y"
+    ) +
+    scale_fill_manual(
+      values = c(
+        "CC" = "#E9A4A0",
+        "VG" = "mediumturquoise"
+      )
+    ) +
+    scale_y_log10() +
+    labs(
+      x = "Desert",
+      y = "Abundance (log10)"
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      legend.position = "none",
+      strip.background = element_blank(),
+      strip.text = element_text(face = "bold", size = 10),
+      axis.text.x = element_text(angle = 30, hjust = 1, size = 11),
+      axis.text.y = element_text(size = 10),
+      axis.title = element_text(size = 14),
+      panel.grid.minor = element_blank(),
+      panel.grid.major.x = element_blank()
+    )
+  
+  return(p)
+}
+
+
+# ============================================================
+# 8.4. Función para construir figura en español
+# ============================================================
+
+make_violin_plot_es <- function(data, facet_var, figure_type = "all") {
+  
+  p <- ggplot(
+    data,
+    aes(
+      x = Desert_code,
+      y = Category_abundance_plot,
+      fill = Desert_code
+    )
+  ) +
+    geom_violin(
+      trim = FALSE,
+      alpha = 0.65,
+      color = NA
+    ) +
+    geom_boxplot(
+      width = 0.10,
+      outlier.shape = NA,
+      fill = "white",
+      color = "black",
+      linewidth = 0.5
+    ) +
+    facet_wrap(
+      stats::as.formula(paste("~", facet_var)),
+      ncol = ifelse(figure_type == "all", 4, 4),
+      scales = "free_y"
+    ) +
+    scale_fill_manual(
+      values = c(
+        "CC" = "#E9A4A0",
+        "VG" = "mediumturquoise"
+      )
+    ) +
+    scale_y_log10() +
+    labs(
+      x = "Desierto",
+      y = "Abundancia (log10)"
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      legend.position = "none",
+      strip.background = element_blank(),
+      strip.text = element_text(face = "bold", size = 10),
+      axis.text.x = element_text(angle = 30, hjust = 1, size = 11),
+      axis.text.y = element_text(size = 10),
+      axis.title = element_text(size = 14),
+      panel.grid.minor = element_blank(),
+      panel.grid.major.x = element_blank()
+    )
+  
+  return(p)
+}
+# ============================================================
+# 8.5. Generar Figura 1: todas las categorías
+# ============================================================
+
+fig01_violin_all_en <- make_violin_plot_en(
+  data = violin_plot_data_en,
+  facet_var = "facet_label_wrapped_en",
+  figure_type = "all"
+)
+
+fig01_violin_all_es <- make_violin_plot_es(
+  data = violin_plot_data_es,
+  facet_var = "facet_label_wrapped_es",
+  figure_type = "all"
+)
+
+fig01_violin_all_en
+fig01_violin_all_es
+
+# ============================================================
+# 8.6. Generar Figura 2: categorías seleccionadas
+# ============================================================
+# Si hubo categorías significativas, esta figura muestra esas categorías.
+# Si no hubo categorías significativas, muestra las categorías con mayor
+# tamaño de efecto absoluto, definidas en el Bloque 7.
+
+fig02_violin_selected_en <- make_violin_plot_en(
+  data = violin_plot_data_en_fig2,
+  facet_var = "facet_label_wrapped_en",
+  figure_type = "selected"
+)
+
+fig02_violin_selected_es <- make_violin_plot_es(
+  data = violin_plot_data_es_fig2,
+  facet_var = "facet_label_wrapped_es",
+  figure_type = "selected"
+)
+
+fig02_violin_selected_en
+fig02_violin_selected_es
+
+# ============================================================
+# 8.7. Guardar Figura 1 en inglés para publicación
+# ============================================================
+
+ggsave(
+  filename = file.path(
+    dir_figures,
+    "Figure_01_MetaCyc_violin_all_categories_publication_EN.pdf"
+  ),
+  plot = fig01_violin_all_en,
+  width = 11,
+  height = 9,
+  units = "in"
+)
+
+ggsave(
+  filename = file.path(
+    dir_figures,
+    "Figure_01_MetaCyc_violin_all_categories_publication_EN.jpg"
+  ),
+  plot = fig01_violin_all_en,
+  width = 11,
+  height = 9,
+  units = "in",
+  dpi = 600
+)
+
+ggsave(
+  filename = file.path(
+    dir_figures,
+    "Figure_01_MetaCyc_violin_all_categories_publication_EN.tiff"
+  ),
+  plot = fig01_violin_all_en,
+  width = 11,
+  height = 9,
+  units = "in",
+  dpi = 600,
+  compression = "lzw"
+)
+
+# ============================================================
+# 8.8. Guardar Figura 2 en inglés para publicación
+# ============================================================
+
+ggsave(
+  filename = file.path(
+    dir_figures,
+    "Figure_02_MetaCyc_violin_selected_categories_publication_EN.pdf"
+  ),
+  plot = fig02_violin_selected_en,
+  width = 10,
+  height = 6.5,
+  units = "in"
+)
+
+ggsave(
+  filename = file.path(
+    dir_figures,
+    "Figure_02_MetaCyc_violin_selected_categories_publication_EN.jpg"
+  ),
+  plot = fig02_violin_selected_en,
+  width = 10,
+  height = 6.5,
+  units = "in",
+  dpi = 600
+)
+
+ggsave(
+  filename = file.path(
+    dir_figures,
+    "Figure_02_MetaCyc_violin_selected_categories_publication_EN.tiff"
+  ),
+  plot = fig02_violin_selected_en,
+  width = 10,
+  height = 6.5,
+  units = "in",
+  dpi = 600,
+  compression = "lzw"
+)
+
+# ============================================================
+# 8.9. Guardar Figura 1 en español
+# ============================================================
+
+ggsave(
+  filename = file.path(
+    dir_figures,
+    "Figura_01_MetaCyc_violines_todas_categorias_ES.pdf"
+  ),
+  plot = fig01_violin_all_es,
+  width = 11,
+  height = 9,
+  units = "in"
+)
+
+ggsave(
+  filename = file.path(
+    dir_figures,
+    "Figura_01_MetaCyc_violines_todas_categorias_ES.jpg"
+  ),
+  plot = fig01_violin_all_es,
+  width = 11,
+  height = 9,
+  units = "in",
+  dpi = 600
+)
+
+# ============================================================
+# 8.10. Guardar Figura 2 en español
+# ============================================================
+
+ggsave(
+  filename = file.path(
+    dir_figures,
+    "Figura_02_MetaCyc_violines_categorias_seleccionadas_ES.pdf"
+  ),
+  plot = fig02_violin_selected_es,
+  width = 10,
+  height = 6.5,
+  units = "in"
+)
+
+ggsave(
+  filename = file.path(
+    dir_figures,
+    "Figura_02_MetaCyc_violines_categorias_seleccionadas_ES.jpg"
+  ),
+  plot = fig02_violin_selected_es,
+  width = 10,
+  height = 6.5,
+  units = "in",
+  dpi = 600
+)
+
+# ============================================================
+# 8.11. Registrar archivos generados
+# ============================================================
+
+figure_files <- tibble::tibble(
+  figure = c(
+    "Figure 1 EN all categories PDF",
+    "Figure 1 EN all categories JPG",
+    "Figure 1 EN all categories TIFF",
+    "Figure 2 EN selected categories PDF",
+    "Figure 2 EN selected categories JPG",
+    "Figure 2 EN selected categories TIFF",
+    "Figura 1 ES todas categorías PDF",
+    "Figura 1 ES todas categorías JPG",
+    "Figura 2 ES categorías seleccionadas PDF",
+    "Figura 2 ES categorías seleccionadas JPG"
+  ),
+  file = c(
+    file.path(dir_figures, "Figure_01_MetaCyc_violin_all_categories_publication_EN.pdf"),
+    file.path(dir_figures, "Figure_01_MetaCyc_violin_all_categories_publication_EN.jpg"),
+    file.path(dir_figures, "Figure_01_MetaCyc_violin_all_categories_publication_EN.tiff"),
+    file.path(dir_figures, "Figure_02_MetaCyc_violin_selected_categories_publication_EN.pdf"),
+    file.path(dir_figures, "Figure_02_MetaCyc_violin_selected_categories_publication_EN.jpg"),
+    file.path(dir_figures, "Figure_02_MetaCyc_violin_selected_categories_publication_EN.tiff"),
+    file.path(dir_figures, "Figura_01_MetaCyc_violines_todas_categorias_ES.pdf"),
+    file.path(dir_figures, "Figura_01_MetaCyc_violines_todas_categorias_ES.jpg"),
+    file.path(dir_figures, "Figura_02_MetaCyc_violines_categorias_seleccionadas_ES.pdf"),
+    file.path(dir_figures, "Figura_02_MetaCyc_violines_categorias_seleccionadas_ES.jpg")
+  )
+)
+
+figure_files <- figure_files %>%
+  dplyr::mutate(
+    exists = file.exists(file)
+  )
+
+preview_table(
+  figure_files,
+  table_name = "figure_files",
+  n = nrow(figure_files),
+  max_cols = Inf
+)
+
+if (!all(figure_files$exists)) {
+  stop(
+    "No todos los archivos de figura fueron creados correctamente. Revisa figure_files."
+  )
+} else {
+  log_write(
+    "Verificación correcta: todos los archivos de figura fueron creados correctamente."
+  )
+}
+
+# ============================================================
+# 8.12. Guardar objetos de figuras
+# ============================================================
+
+saveRDS(
+  fig01_violin_all_en,
+  file = file.path(dir_objects, "08_fig01_violin_all_en.rds")
+)
+
+saveRDS(
+  fig02_violin_selected_en,
+  file = file.path(dir_objects, "08_fig02_violin_selected_en.rds")
+)
+
+saveRDS(
+  fig01_violin_all_es,
+  file = file.path(dir_objects, "08_fig01_violin_all_es.rds")
+)
+
+saveRDS(
+  fig02_violin_selected_es,
+  file = file.path(dir_objects, "08_fig02_violin_selected_es.rds")
+)
+
+readr::write_csv(
+  figure_files,
+  file = file.path(dir_tables, "08_figure_files.csv")
+)
+
+log_write("Bloque 8 completado correctamente.")
+```
+
+
+
+
+

@@ -1,0 +1,36 @@
+Rmd/08_MetaCyc_KO_functions.Rmd:32:/Users/alejandrasarmina/Desktop/HUMAnN3_analisis/rxn-cpm-metacyc.tsv
+Rmd/08_MetaCyc_KO_functions.Rmd:38:/Users/alejandrasarmina/Desktop/HUMAnN3_analisis/MetaCyc
+Rmd/08_MetaCyc_KO_functions.Rmd:61:base_dir <- "/Users/alejandrasarmina/Desktop/HUMAnN3_analisis"
+Rmd/08_MetaCyc_KO_functions.Rmd:1605:/Users/alejandrasarmina/Desktop/HUMAnN3_analisis/MetaCyc
+Rmd/08_MetaCyc_KO_functions.Rmd:1611:/Users/alejandrasarmina/Desktop/HUMAnN3_analisis/MetaCyc/04_figures
+Rmd/08_MetaCyc_KO_functions.Rmd:1626:/Users/alejandrasarmina/Desktop/HUMAnN3_analisis/MetaCyc/01_logbook/MetaCyc_analysis_logbook.md
+Rmd/06_functional_category_violins_and_bars.Rmd:26:BASE_DIR <- "/Users/ale/Desktop/HUMAnN3"
+Rmd/06_functional_category_violins_and_bars.Rmd:128:  decision_tecnica = "Crear estructura nueva dentro de /Users/ale/Desktop/HUMAnN3",
+Rmd/06_functional_category_violins_and_bars.Rmd:139:    "Usar /Users/ale/Desktop/HUMAnN3 como raíz obligatoria",
+Rmd/06_functional_category_violins_and_bars.Rmd:303:      "\nBusca dónde está o colócalo dentro de /Users/ale/Desktop/HUMAnN3 antes de avanzar."
+Rmd/06_functional_category_violins_and_bars.Rmd:334:BASE_DIR <- "/Users/ale/Desktop/HUMAnN3"
+Rmd/06_functional_category_violins_and_bars.Rmd:527:BASE_DIR <- "/Users/ale/Desktop/HUMAnN3"
+Rmd/06_functional_category_violins_and_bars.Rmd:1038:BASE_DIR <- "/Users/ale/Desktop/HUMAnN3"
+Rmd/06_functional_category_violins_and_bars.Rmd:1586:BASE_DIR <- "/Users/ale/Desktop/HUMAnN3"
+Rmd/06_functional_category_violins_and_bars.Rmd:2110:BASE_DIR <- "/Users/ale/Desktop/HUMAnN3"
+Rmd/06_functional_category_violins_and_bars.Rmd:2513:BASE_DIR <- "/Users/ale/Desktop/HUMAnN3"
+Rmd/06_functional_category_violins_and_bars.Rmd:2952:BASE_DIR <- "/Users/ale/Desktop/HUMAnN3"
+Rmd/06_functional_category_violins_and_bars.Rmd:3525:BASE_DIR <- "/Users/ale/Desktop/HUMAnN3"
+Rmd/06_functional_category_violins_and_bars.Rmd:4083:BASE_DIR <- "/Users/ale/Desktop/HUMAnN3"
+Rmd/06_functional_category_violins_and_bars.Rmd:4433:BASE_DIR <- "/Users/ale/Desktop/HUMAnN3"
+Rmd/06_functional_category_violins_and_bars.Rmd:4874:BASE_DIR <- "/Users/ale/Desktop/HUMAnN3"
+Rmd/06_functional_category_violins_and_bars.Rmd:5455:BASE_DIR <- "/Users/ale/Desktop/HUMAnN3"
+Rmd/06_functional_category_violins_and_bars.Rmd:5818:BASE_DIR <- "/Users/ale/Desktop/HUMAnN3"
+Rmd/05_MetaCyc_abundance_violins.Rmd:58:# /Users/ale/Desktop/HUMAnN3
+Rmd/05_MetaCyc_abundance_violins.Rmd:60:dir_input <- "/Users/ale/Desktop/HUMAnN3"
+Rmd/05_MetaCyc_abundance_violins.Rmd:115:# /Users/ale/Desktop/HUMAnN3/MetaCyc_abundance_violins
+Rmd/02_soil_physicochemical_PCA.Rmd:132:ruta_proyecto <- "/Users/ale/Desktop/kraken_gtdb/kraken_analysis_gtdb/Analisis_FQ_diversidad_gtdb"
+Rmd/02_soil_physicochemical_PCA.Rmd:134:ruta_bracken <- "/Users/ale/Desktop/kraken_gtdb/kraken_analysis_gtdb/diversidad_bracken/bracken_especie"
+Rmd/02_soil_physicochemical_PCA.Rmd:136:ruta_fq <- "/Users/ale/Desktop/kraken_gtdb/kraken_analysis_gtdb"
+Rmd/02_soil_physicochemical_PCA.Rmd:1499:tables_dir <- "/Users/ale/Desktop/kraken_gtdb/kraken_analysis_gtdb/Analisis_FQ_diversidad_gtdb/resultados/tablas"
+Rmd/04_MetaCyc_heatmap.Rmd:64:dir_input <- "/Users/alejandrasarmina/Desktop/HUMAnN3/hummann_origen"
+Rmd/07_KO_differential_by_category.Rmd:7:  project_dir: "~/Desktop/HUMAnN3"
+Rmd/07_KO_differential_by_category.Rmd:24:/Users/alejandrasarmina/Desktop/HUMAnN3/
+Rmd/07_KO_differential_by_category.Rmd:33:/Users/alejandrasarmina/Desktop/HUMAnN3/
+Rmd/07_KO_differential_by_category.Rmd:54:project_dir <- "/Users/ale/Desktop/HUMAnN3/Analisis_figura_X"
+Rmd/01_taxonomic_PCoA_Bray_Curtis_species.Rmd:54:project_dir <- "/Users/ale/Desktop/kraken_gtdb/kraken_analysis_gtdb/diversidad_bracken/bracken_especie"

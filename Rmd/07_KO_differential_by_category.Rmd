@@ -1,0 +1,4244 @@
+---
+title: "Geneset diferencial por categoría (Glucosa, UV, Fotosíntesis, N)"
+author: "Gloria Sarmina"
+date: "`r Sys.Date()`"
+output: html_document
+params:
+  project_dir: "~/Desktop/HUMAnN3"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+```{r cars}
+summary(cars)
+```
+Estructura de las carpetas:
+/Users/alejandrasarmina/Desktop/HUMAnN3/
+├── data/
+│   └── subset_genefamilies.tsv
+├── uniref_mapping_reducido/
+│   ├── uniref90_ko_reduced_long.tsv
+│   └── ko_name_reduced.tsv
+└── (R scripts, Rmd, etc.)
+
+Output:
+/Users/alejandrasarmina/Desktop/HUMAnN3/
+├── metadata/
+├── results/
+│   ├── tables/
+│   └── figures/
+
+```{r}
+
+library(tidyverse)
+library(readr)
+library(stringr)
+library(ggplot2)
+library(pheatmap)
+library(scales)
+
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+```{r}
+# Ruta del proyecto
+project_dir <- "/Users/ale/Desktop/HUMAnN3/Analisis_figura_X"
+
+# Crear carpetas de salida 
+dir.create(file.path(project_dir, "metadata"), recursive = TRUE, showWarnings = FALSE)
+dir.create(file.path(project_dir, "results", "tables"), recursive = TRUE, showWarnings = FALSE)
+dir.create(file.path(project_dir, "results", "figures"), recursive = TRUE, showWarnings = FALSE)
+dir.create(file.path(project_dir, "results", "qc"), recursive = TRUE, showWarnings = FALSE)
+
+```
+Funciones de escritura segura
+```{r}
+safe_write_tsv <- function(df, path, fallback_dir = project_dir) {
+  dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+  tmp <- tempfile(fileext = ".tsv")
+  ok <- FALSE
+  
+  tryCatch({
+    readr::write_tsv(df, tmp)
+    file.copy(tmp, path, overwrite = TRUE)
+    ok <<- TRUE
+  }, error = function(e) {
+    message("Error escribiendo en ", path, ". Se usará carpeta de respaldo.")
+    message("Detalle: ", e$message)
+  })
+  
+  if (!ok) {
+    fallback_path <- file.path(fallback_dir, basename(path))
+    readr::write_tsv(df, fallback_path)
+    message("Guardado en respaldo: ", fallback_path)
+  }
+  
+  invisible(path)
+}
+
+safe_ggsave <- function(filename, plot, path = file.path(project_dir, "results", "figures"),
+                        fallback_dir = project_dir, ...) {
+  dir.create(path, recursive = TRUE, showWarnings = FALSE)
+  full_path <- file.path(path, filename)
+  tmp <- tempfile(fileext = paste0(".", tools::file_ext(filename)))
+  
+  ok <- FALSE
+  
+  tryCatch({
+    ggplot2::ggsave(tmp, plot = plot, ...)
+    file.copy(tmp, full_path, overwrite = TRUE)
+    ok <<- TRUE
+  }, error = function(e) {
+    message("Error guardando figura en ", full_path, ". Se usará carpeta de respaldo.")
+    message("Detalle: ", e$message)
+  })
+  
+  if (!ok) {
+    fallback_path <- file.path(fallback_dir, filename)
+    ggplot2::ggsave(fallback_path, plot = plot, ...)
+    message("Figura guardada en respaldo: ", fallback_path)
+  }
+  
+  invisible(full_path)
+}
+
+```
+Normalizadores de IDs y funciones composicionales
+Estas funciones hacen 3 cosas clave:
+Estandarizar IDs (quitar espacios, poner mayúsculas).
+Pasar a proporciones (cada muestra suma 1).
+Aplicar pseudoconteo + CLR (para datos composicionales).
+
+```{r}
+# Limpia UniRef (sin espacios, mayúsculas)
+std_uniref <- function(x) {
+  x <- trimws(x)
+  x <- gsub("\\s+", "", x)
+  toupper(x)
+}
+
+# Limpia KOs (garantiza KXXXXX)
+std_ko <- function(x) {
+  x <- trimws(toupper(x))
+  x <- gsub("\\s+", "", x)
+  # Si viene sólo 5 dígitos, agrega la K
+  mask5 <- grepl("^\\d{5}$", x)
+  x[mask5] <- paste0("K", x[mask5])
+  x
+}
+
+# Convierte columnas de muestra en proporciones por muestra (cada columna suma 1)
+to_proportions <- function(df, sample_cols) {
+  mat <- as.matrix(df[, sample_cols, drop = FALSE])
+  col_sums <- colSums(mat)
+  mat <- sweep(mat, 2, col_sums, FUN = "/")
+  df[, sample_cols] <- mat
+  df
+}
+
+# Agrega pseudoconteo por muestra: mitad del mínimo no-cero de esa muestra
+pseudocount_per_sample <- function(df, sample_cols) {
+  mat <- as.matrix(df[, sample_cols, drop = FALSE])
+  for (j in seq_len(ncol(mat))) {
+    col <- mat[, j]
+    min_pos <- suppressWarnings(min(col[col > 0], na.rm = TRUE))
+    if (is.finite(min_pos)) {
+      pseudo <- min_pos / 2
+      col <- col + pseudo
+    }
+    mat[, j] <- col
+  }
+  df[, sample_cols] <- mat
+  df
+}
+
+# Transformación CLR: log(x) - media(log(x)) por muestra
+clr_transform <- function(df, sample_cols) {
+  mat <- as.matrix(df[, sample_cols, drop = FALSE])
+  log_mat <- log(mat)
+  means <- colMeans(log_mat)
+  clr_mat <- sweep(log_mat, 2, means, FUN = "-")
+  df[, sample_cols] <- clr_mat
+  df
+}
+
+```
+
+Cliffs delta
+
+```{r}
+cliffs_delta <- function(x, g) {
+  # x = vector numérico (CLR), g = factor de grupos (ej. "CC" y "VG")
+  x <- x[!is.na(x)]
+  g <- g[!is.na(g)]
+  stopifnot(length(x) == length(g))
+  
+  grupos <- levels(factor(g))
+  if (length(grupos) != 2) stop("cliffs_delta necesita exactamente 2 grupos.")
+  
+  x1 <- x[g == grupos[1]]
+  x2 <- x[g == grupos[2]]
+  
+  # Todas las comparaciones par a par
+  diffs <- outer(x1, x2, "-")
+  delta <- (sum(diffs > 0) - sum(diffs < 0)) / (length(x1) * length(x2))
+  
+  delta
+}
+
+```
+
+```{r}
+genefamilies_path <- file.path(project_dir, "data", "subset_genefamilies.tsv")
+
+gf_raw <- readr::read_tsv(genefamilies_path)
+
+# Asegurar nombre de columna de IDs
+id_col <- "Gene_Family"
+stopifnot(id_col %in% colnames(gf_raw))
+
+# Detectar columnas de muestras por sufijo
+sample_cols <- grep("_Abundance-RPKs$", colnames(gf_raw), value = TRUE)
+length(sample_cols)
+
+```
+```{r}
+# 1.2 Filtrar UNMAPPED / UNINTEGRATED y limpiar UniRef IDs
+
+gf_u <- gf_raw %>%
+  filter(
+    !Gene_Family %in% c("UNMAPPED", "UNINTEGRATED")
+  ) %>%
+  mutate(Gene_Family = std_uniref(Gene_Family))
+
+# Chequeo rápido
+nrow(gf_raw)
+nrow(gf_u)
+dplyr::count(gf_raw, Gene_Family %in% c("UNMAPPED", "UNINTEGRATED"))
+head(gf_u)
+
+```
+Metadatos
+```{r}
+# 1.3 Crear plantilla de metadatos de muestras
+
+metadata_file <- file.path(project_dir, "metadata", "metadata_muestras.csv")
+
+if (!file.exists(metadata_file)) {
+  metadata_template <- tibble(
+    sample_column = sample_cols,
+    sample_id     = str_replace(sample_cols, "_Abundance-RPKs$", ""),
+    Desierto      = NA_character_,  # Rellena con "CC" o "VG"
+    Cuadrante     = NA_character_   # Rellena según tu diseño (ej. Q1, Q2...)
+  )
+  
+  readr::write_csv(metadata_template, metadata_file)
+  message("Se creó metadata_muestras.csv en la carpeta metadata/. ",
+          "Ábrelo, rellena Desierto y Cuadrante, guarda y luego vuelve a correr esta parte.")
+}
+
+# Una vez rellenado el CSV, esta parte lo leerá:
+metadata <- readr::read_csv(metadata_file, show_col_types = FALSE)
+
+# Comprobar que todas las columnas de muestra están en el metadata
+stopifnot(all(sample_cols %in% metadata$sample_column))
+
+# Definir Desierto como factor ordenado (CC primero, VG después)
+metadata <- metadata %>%
+  mutate(
+    Desierto = factor(Desierto, levels = c("CC", "VG"))
+  )
+
+# Vector de grupo por columna (lo usaremos muchas veces)
+group_desert <- metadata$Desierto
+names(group_desert) <- metadata$sample_column
+
+metadata
+
+```
+```{r}
+# Una vez rellenado el CSV, esta parte lo leerá:
+metadata <- readr::read_csv(metadata_file, show_col_types = FALSE)
+
+# Comprobar que todas las columnas de muestra están en el metadata
+stopifnot(all(sample_cols %in% metadata$sample_column))
+
+# Definir Desierto como factor ordenado (CC primero, VG después)
+metadata <- metadata %>%
+  mutate(
+    Desierto = factor(Desierto, levels = c("CC", "VG"))
+  )
+
+# Vector de grupo por columna (lo usaremos muchas veces)
+group_desert <- metadata$Desierto
+names(group_desert) <- metadata$sample_column
+
+metadata
+```
+
+
+Mapeos + construcción de tablas base
+2.1 – Cargar y autodetectar KO → nombre
+```{r}
+# 2.1 KO -> Nombre
+
+ko_name_path <- file.path(project_dir, "uniref_mapping_reducido", "ko_name_reduced.tsv")
+
+ko_raw <- readr::read_tsv(ko_name_path, col_types = cols(.default = "c"))
+
+# Detectar columna KO (por patrón KXXXXX)
+is_ko_col <- sapply(ko_raw, function(col) any(grepl("^K\\d{5}$", std_ko(col))))
+ko_colname <- names(ko_raw)[is_ko_col][1]
+
+# Detectar la mejor columna de nombre: la de texto más largo
+name_col_candidates <- setdiff(names(ko_raw), ko_colname)
+name_colname <- name_col_candidates[
+  which.max(
+    sapply(ko_raw[name_col_candidates], function(col) mean(nchar(col), na.rm = TRUE))
+  )
+]
+
+ko_names <- ko_raw %>%
+  transmute(
+    KO = std_ko(.data[[ko_colname]]),
+    ko_name = .data[[name_colname]]
+  ) %>%
+  distinct()
+
+ko_names %>% head()
+
+```
+```{r}
+# 2.2 UniRef -> KO
+
+uniref_ko_path <- file.path(project_dir, "uniref_mapping_reducido", "uniref90_ko_reduced_long.tsv")
+
+uniref_ko_raw <- readr::read_tsv(uniref_ko_path, col_types = cols(.default = "c"))
+
+# Autodetectar columna UniRef
+is_uniref_col <- sapply(uniref_ko_raw, function(col) any(grepl("UNIREF", toupper(col))))
+uniref_colname <- names(uniref_ko_raw)[is_uniref_col][1]
+
+# Autodetectar columna KO
+is_ko_col2 <- sapply(uniref_ko_raw, function(col) any(grepl("^K\\d{5}$", std_ko(col))))
+ko_colname2 <- names(uniref_ko_raw)[is_ko_col2][1]
+
+uniref_ko <- uniref_ko_raw %>%
+  transmute(
+    Gene_Family = std_uniref(.data[[uniref_colname]]),
+    KO          = std_ko(.data[[ko_colname2]])
+  ) %>%
+  distinct()
+
+# Añadir pesos: UniRef que mapearon a varios KO reparten abundancia
+uniref_ko_weights <- uniref_ko %>%
+  group_by(Gene_Family) %>%
+  mutate(
+    n_ko = n(),
+    weight = 1 / n_ko
+  ) %>%
+  ungroup()
+
+uniref_ko_weights %>% head()
+
+```
+```{r}
+# 2.3 Construir KO_by_sample
+
+gf_with_ko <- gf_u %>%
+  inner_join(uniref_ko_weights, by = "Gene_Family")
+
+ko_by_sample <- gf_with_ko %>%
+  mutate(across(all_of(sample_cols), ~ .x * weight)) %>%
+  group_by(KO) %>%
+  summarise(across(all_of(sample_cols), sum), .groups = "drop") %>%
+  left_join(ko_names, by = "KO")
+
+ko_by_sample_path <- file.path(project_dir, "results", "tables", "KO_by_sample.tsv")
+safe_write_tsv(ko_by_sample, ko_by_sample_path)
+
+ko_by_sample %>% head()
+
+```
+Definir los gene sets por categoría
+
+```{r}
+# 2.4 Definir categorías
+
+category_patterns <- list(
+  Glucosa_central = "(glycolysis|pyruvate|gluconeogenesis|fructose|glyceraldehyde)",
+  UV_repair       = "(photolyase|uv|dna repair|nucleotide excision)",
+  Photosynthesis  = "(photosystem|chlorophyll|bacteriochlorophyll|light-harvesting)",
+  Nitrogen        = "(nitrate reductase|nitrogenase|glutamine synthetase|ammonia|denitrif)"
+)
+
+assign_category <- function(name) {
+  name_low <- tolower(name %||% "")
+  cats <- names(Filter(function(pat) str_detect(name_low, pat), category_patterns))
+  if (length(cats) == 0) return(NA_character_)
+  paste(cats, collapse = ";")
+}
+
+genesets_by_category <- ko_by_sample %>%
+  mutate(category = vapply(ko_name, assign_category, character(1))) %>%
+  filter(!is.na(category)) %>%
+  select(KO, ko_name, category)
+
+genesets_by_category_path <- file.path(project_dir, "results", "tables", "genesets_by_category.tsv")
+safe_write_tsv(genesets_by_category, genesets_by_category_path)
+
+genesets_by_category %>% head()
+
+```
+Sumar abundancias por categoría
+```{r}
+category_abundance <- ko_by_sample %>%
+  inner_join(genesets_by_category, by = c("KO", "ko_name")) %>%
+  group_by(category) %>%
+  summarise(across(all_of(sample_cols), sum), .groups = "drop")
+
+category_abundance_path <- file.path(project_dir, "results", "tables", "category_abundance.tsv")
+safe_write_tsv(category_abundance, category_abundance_path)
+
+category_abundance
+
+```
+```{r}
+ko_by_sample <- readr::read_tsv(ko_by_sample_path)
+genesets_by_category <- readr::read_tsv(genesets_by_category_path)
+category_abundance <- readr::read_tsv(category_abundance_path)
+
+stopifnot(all(sample_cols %in% metadata$sample_column))
+
+group_desert <- metadata$Desierto
+names(group_desert) <- metadata$sample_column
+
+```
+```{r}
+cat_clr <- category_abundance %>%
+  to_proportions(sample_cols) %>%
+  pseudocount_per_sample(sample_cols) %>%
+  clr_transform(sample_cols)
+
+cat_clr_long <- cat_clr %>%
+  pivot_longer(cols = all_of(sample_cols),
+               names_to = "sample_column",
+               values_to = "CLR") %>%
+  left_join(metadata, by = "sample_column")
+
+```
+```{r}
+ko_abundance <- ko_by_sample %>%
+  select(KO, ko_name, all_of(sample_cols))
+
+ko_prevalence <- ko_abundance %>%
+  mutate(prevalence = rowMeans(across(all_of(sample_cols), ~ .x > 0))) %>%
+  select(KO, prevalence)
+
+ko_clr <- ko_abundance %>%
+  to_proportions(sample_cols) %>%
+  pseudocount_per_sample(sample_cols) %>%
+  clr_transform(sample_cols)
+
+ko_clr_long <- ko_clr %>%
+  pivot_longer(cols = all_of(sample_cols),
+               names_to = "sample_column",
+               values_to = "CLR") %>%
+  left_join(metadata, by = "sample_column") %>%
+  left_join(genesets_by_category, by = c("KO","ko_name"))
+
+```
+Cuantos datos válidos hay por categoría de desierto
+```{r}
+cat_clr_long %>%
+  group_by(category, Desierto) %>%
+  summarise(
+    n_total = n(),
+    n_valid_CLR = sum(!is.na(CLR)),
+    n_NA_CLR = sum(is.na(CLR)),
+    .groups = "drop"
+  ) %>%
+  arrange(category, Desierto)
+```
+
+
+```{r}
+category_diff <- cat_clr_long %>%
+  group_by(category) %>%
+  summarise(
+    n_CC = sum(Desierto == "CC"),
+    n_VG = sum(Desierto == "VG"),
+    mean_CLR_CC = mean(CLR[Desierto == "CC"], na.rm = TRUE),
+    mean_CLR_VG = mean(CLR[Desierto == "VG"], na.rm = TRUE),
+    diff_meanCLR = mean_CLR_VG - mean_CLR_CC,
+    p_value = wilcox.test(CLR[Desierto == "VG"], CLR[Desierto == "CC"])$p.value,
+    cliffs_delta = cliffs_delta(CLR, Desierto),
+    .groups = "drop"
+  ) %>% 
+  mutate(p_adj = p.adjust(p_value, method = "BH")) %>%
+  arrange(p_adj)
+
+safe_write_tsv(category_diff,
+               file.path(project_dir, "results", "tables", "category_differential.tsv"))
+
+```
+```{r}
+ko_diff_all <- ko_clr_long %>%
+  filter(!is.na(category)) %>%
+  group_by(category, KO, ko_name) %>%
+  summarise(
+    n_CC = sum(Desierto == "CC"),
+    n_VG = sum(Desierto == "VG"),
+    mean_CLR_CC = mean(CLR[Desierto == "CC"], na.rm = TRUE),
+    mean_CLR_VG = mean(CLR[Desierto == "VG"], na.rm = TRUE),
+    diff_meanCLR = mean_CLR_VG - mean_CLR_CC,
+    p_value = wilcox.test(CLR[Desierto == "VG"], CLR[Desierto == "CC"])$p.value,
+    cliffs_delta = cliffs_delta(CLR, Desierto),
+    .groups = "drop"
+  ) %>%
+  left_join(ko_prevalence, by = "KO") %>%
+  filter(prevalence >= 0.20) %>%
+  mutate(p_adj = p.adjust(p_value, method = "BH")) %>%
+  arrange(category, p_adj)
+
+safe_write_tsv(ko_diff_all,
+               file.path(project_dir, "results", "tables", "KO_differential_all_categories.tsv"))
+
+```
+
+```{r}
+p_violin_cat <- ggplot(cat_clr_long, aes(x = category, y = CLR, fill = Desierto)) +
+  geom_violin(trim = FALSE, alpha = 0.5) +
+  geom_jitter(width = 0.15, size = 1, alpha = 0.7) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  labs(
+    title = "Distribución CLR por categoría y desierto",
+    x = "Categoría funcional",
+    y = "CLR (abundancia transformada)"
+  )
+
+print(p_violin_cat)
+
+safe_ggsave("violin_category_CLR.png", p_violin_cat, width = 8, height = 6, dpi = 300)
+
+```
+```{r}
+cat_for_forest <- category_diff %>%
+  mutate(category = fct_reorder(category, diff_meanCLR))
+
+p_forest <- ggplot(cat_for_forest,
+                   aes(x = diff_meanCLR, y = category)) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  geom_point(aes(size = -log10(p_adj),
+                 color = p_adj < 0.05)) +
+  theme_bw() +
+  labs(
+    title = "Efecto funcional (VG – CC) por categoría",
+    x = "Δ media CLR (enriquecimiento VG vs CC)",
+    y = "Categoría",
+    size = "-log10(q)",
+    color = "q < 0.05"
+  )
+
+print(p_forest)
+
+safe_ggsave("forest_category_diffCLR.png", p_forest, width = 7, height = 5, dpi = 300)
+
+```
+```{r}
+ko_diff_all <- ko_diff_all %>%
+  mutate(
+    neg_log10_q = -log10(p_adj),
+    direction = if_else(diff_meanCLR > 0, "VG>CC", "CC>VG")
+  )
+
+for (cat in unique(ko_diff_all$category)) {
+  df_cat <- ko_diff_all %>% filter(category == cat)
+  
+  p_volcano <- ggplot(df_cat, aes(x = diff_meanCLR, y = neg_log10_q)) +
+    geom_point(aes(color = direction), alpha = 0.7) +
+    geom_vline(xintercept = 0, linetype = "dashed") +
+    geom_hline(yintercept = -log10(0.05), linetype = "dotted") +
+    theme_bw() +
+    labs(
+      title = paste("Volcano plot: KOs en", cat),
+      x = "Δ CLR (VG–CC)",
+      y = "-log10(q)"
+    )
+  
+  print(p_volcano)
+  
+  fname <- paste0("volcano_KO_", gsub("[^A-Za-z0-9]+", "_", cat), ".png")
+  safe_ggsave(fname, p_volcano, width = 7, height = 5, dpi = 300)
+}
+
+```
+```{r}
+# 4.4 – Heatmaps de KOs significativos (q <= 0.1)
+
+alpha_heatmap <- 0.1
+
+for (cat in unique(ko_diff_all$category)) {
+  sig_kos <- ko_diff_all %>%
+    filter(category == cat, p_adj <= alpha_heatmap) %>%
+    pull(KO)
+  
+  if (!length(sig_kos)) next
+  
+  mat_cat <- ko_clr %>%
+    filter(KO %in% sig_kos) %>%
+    select(KO, all_of(sample_cols)) %>%
+    column_to_rownames("KO") %>%
+    as.matrix()
+  
+  # Z-score por KO (fila)
+  mat_z <- t(scale(t(mat_cat)))
+  
+  # Anotación de columnas
+  annot_col <- metadata %>%
+    select(sample_column, Desierto) %>%
+    column_to_rownames("sample_column")
+  
+  # Título SOLO con ASCII y limpiado con iconv (por si algo raro se cuela)
+  title_main <- paste("KOs significativos (q <= 0.1) -", cat)
+  title_main <- iconv(title_main, from = "", to = "latin1", sub = ".")
+  
+  fname <- paste0("heatmap_KO_", gsub("[^A-Za-z0-9]+", "_", cat), ".png")
+  
+  png(file.path(project_dir, "results", "figures", fname),
+      width = 900, height = 1200)
+  pheatmap(mat_z,
+           annotation_col = annot_col,
+           main = title_main,
+           fontsize_row = 6)
+  dev.off()
+}
+
+```
+
+```{r}
+category_diff %>% arrange(p_adj)
+
+```
+
+```{r}
+ko_diff_all %>% 
+  filter(category == "Photosynthesis") %>% 
+  arrange(p_adj) %>% 
+  select(KO, ko_name, diff_meanCLR, p_adj) %>% 
+  head(10)
+```
+
+```{r}
+ko_diff_all %>%
+  filter(category == "Nitrogen") %>%
+  arrange(p_adj) %>%
+  select(KO, ko_name, diff_meanCLR, p_adj) %>%
+  head(12)
+
+
+```
+
+```{r}
+df <- to_proportions(df, sample_cols)
+
+```
+Para hacer los lollypop
+```{r}
+library(tidyverse)
+
+ko_diff_all <- read_tsv(file.path(project_dir, "results/tables/KO_differential_all_categories.tsv"))
+
+# Filtrar KOs significativos (q <= 0.1)
+ko_sig <- ko_diff_all %>%
+  filter(p_adj <= 0.1, !is.na(cliffs_delta))
+
+```
+```{r}
+plot_lollipop_category <- function(cat, df = ko_sig, top_n = 15) {
+  
+  df2 <- df %>% 
+    filter(category == cat) %>%
+    arrange(desc(abs(cliffs_delta))) %>%
+    slice_head(n = top_n) %>% 
+    mutate(label = ifelse(!is.na(ko_name), ko_name, KO),
+           label = str_trunc(label, width = 50),
+           direction = if_else(diff_meanCLR > 0, "VG>CC", "CC>VG"))
+  
+  if(nrow(df2) == 0){
+    message("No significant KOs for category: ", cat)
+    return(NULL)
+  }
+  
+  p <- ggplot(df2, aes(x = reorder(label, cliffs_delta), y = cliffs_delta, color = direction)) +
+    geom_segment(aes(xend = label, y = 0, yend = cliffs_delta), linewidth = 0.8) +
+    geom_point(size = 3) +
+    coord_flip() +
+    theme_minimal(base_size = 12) +
+    labs(title = paste("Lollipop plot –", cat),
+         x = "KO (abreviado)", y = "Cliff’s delta (tamaño de efecto)") +
+    scale_color_manual(values = c("VG>CC" = "#00BFC4", "CC>VG" = "#F8766D"))
+  
+  # Guardado seguro
+  safe_ggsave(
+    filename = paste0("lollipop_cliff_", cat, ".png"),
+    plot = p,
+    width = 8, height = 6
+  )
+  
+  return(p)
+}
+
+```
+
+```{r}
+categorias <- unique(ko_sig$category)
+
+plots_lollipop <- map(categorias, plot_lollipop_category)
+plots_lollipop
+
+```
+```{r}
+library(tidyverse)
+
+ko_diff_all <- readr::read_tsv(
+  file.path(project_dir, "results", "tables", "KO_differential_all_categories.tsv")
+)
+
+```
+```{r}
+top_n_effect <- 10  # cambia a 15, 20, etc. si quieres más
+
+ko_lolli_all <- ko_diff_all %>%
+  # Solo KOs con tamaño de efecto y significativos
+  filter(!is.na(cliffs_delta), p_adj <= 0.1) %>%
+  group_by(category) %>%
+  # Top |Cliff’s delta| dentro de cada categoría
+  slice_max(order_by = abs(cliffs_delta),
+            n = top_n_effect,
+            with_ties = FALSE) %>%
+  ungroup() %>%
+  mutate(
+    direction = if_else(diff_meanCLR > 0, "VG>CC", "CC>VG"),
+    # Etiqueta: nombre del KO o el ID si no lo hay
+    label = ifelse(!is.na(ko_name) & ko_name != "", ko_name, KO),
+    label = stringr::str_trunc(label, width = 45)  # recorta para que quepa
+  )
+
+```
+```{r}
+p_lolli_all <- ggplot(
+  ko_lolli_all,
+  aes(x = reorder(label, cliffs_delta), y = cliffs_delta, color = direction)
+) +
+  geom_segment(aes(xend = label, y = 0, yend = cliffs_delta), linewidth = 0.7) +
+  geom_point(size = 2) +
+  coord_flip() +
+  facet_wrap(~ category, scales = "free_y") +
+  theme_bw(base_size = 10) +
+  labs(
+    title = "Top KOs por tamaño de efecto en todas las categorías",
+    x = "KO (nombre abreviado)",
+    y = "Cliff's delta"
+  ) +
+  scale_color_manual(values = c("VG>CC" = "#00BFC4", "CC>VG" = "#F8766D"))
+
+print(p_lolli_all)
+
+safe_ggsave(
+  "lollipop_cliff_all_categories.png",
+  p_lolli_all,
+  width = 10, height = 8, dpi = 300
+)
+
+```
+```{r}
+library(tidyverse)
+
+ko_diff_all <- readr::read_tsv(
+  file.path(project_dir, "results", "tables", "KO_differential_all_categories.tsv")
+)
+
+top_n_global <- 40   # cámbialo si quieres más o menos KOs
+
+ko_lolli_global <- ko_diff_all %>%
+  # solo KOs con tamaño de efecto y significativos
+  filter(!is.na(cliffs_delta), p_adj <= 0.1) %>%
+  mutate(
+    direction = if_else(diff_meanCLR > 0, "VG>CC", "CC>VG"),
+    base_name = ifelse(!is.na(ko_name) & ko_name != "", ko_name, KO),
+    # etiqueta: categoría + nombre abreviado
+    label = paste0(category, " | ", stringr::str_trunc(base_name, width = 50))
+  ) %>%
+  # elegir los TOP N globales por |Cliff's delta|
+  slice_max(order_by = abs(cliffs_delta),
+            n = top_n_global,
+            with_ties = FALSE)
+
+```
+```{r}
+p_lolli_global <- ggplot(
+  ko_lolli_global,
+  aes(x = reorder(label, cliffs_delta), y = cliffs_delta, color = direction)
+) +
+  geom_segment(aes(xend = label, y = 0, yend = cliffs_delta), linewidth = 0.8) +
+  geom_point(size = 2.5) +
+  coord_flip() +
+  theme_bw(base_size = 10) +
+  labs(
+    title = "Top KOs por tamaño de efecto (todas las categorías)",
+    x = "Categoría | KO (abreviado)",
+    y = "Cliff's delta"
+  ) +
+  scale_color_manual(values = c("VG>CC" = "#00BFC4", "CC>VG" = "#F8766D"))
+
+print(p_lolli_global)
+
+safe_ggsave(
+  "lollipop_cliff_allKOs_una_figura.png",
+  p_lolli_global,
+  width = 9, height = 7, dpi = 300
+)
+
+```
+
+```{r bloque_6_genesets_y_abundancia_categoria, message=TRUE, warning=TRUE}
+# ============================================================
+# BLOQUE 6. DEFINICIÓN DE GENESETS Y ABUNDANCIA POR CATEGORÍA
+# ============================================================
+
+log_section("BLOQUE 6. Definición de genesets por categoría funcional")
+
+log_msg("Razón del bloque:")
+log_msg("Asignar KOs a categorías funcionales usando los patrones originales del protocolo base.")
+log_msg("Después, sumar las abundancias de los KOs dentro de cada categoría.")
+log_msg("Este bloque alimenta los análisis por categoría y las figuras posteriores.")
+
+# ------------------------------------------------------------
+# 6.1 Cargar objetos necesarios
+# ------------------------------------------------------------
+
+ko_by_sample <- readRDS(file.path(dir_objects, "05_KO_by_sample.rds"))
+sample_cols <- readRDS(file.path(dir_objects, "02B_sample_cols.rds"))
+metadata <- readRDS(file.path(dir_objects, "03_metadata_ordenada_como_sample_cols.rds"))
+
+log_msg("Objetos cargados:")
+log_msg("- ko_by_sample")
+log_msg("- sample_cols")
+log_msg("- metadata")
+
+log_msg("Dimensiones de ko_by_sample: ", nrow(ko_by_sample), " filas x ", ncol(ko_by_sample), " columnas")
+
+# ------------------------------------------------------------
+# 6.2 Definir patrones originales de categorías
+# ------------------------------------------------------------
+
+category_patterns <- list(
+  Glucosa_central = "(glycolysis|pyruvate|gluconeogenesis|fructose|glyceraldehyde)",
+  UV_repair       = "(photolyase|uv|dna repair|nucleotide excision)",
+  Photosynthesis  = "(photosystem|chlorophyll|bacteriochlorophyll|light-harvesting)",
+  Nitrogen        = "(nitrate reductase|nitrogenase|glutamine synthetase|ammonia|denitrif)"
+)
+
+category_patterns_tbl <- tibble::tibble(
+  category = names(category_patterns),
+  pattern = unlist(category_patterns),
+  status = "FROZEN_DO_NOT_MODIFY",
+  reason = "Patrones originales del protocolo base; no se modifican para conservar los mismos valores y figuras."
+)
+
+log_table(
+  category_patterns_tbl,
+  "06_patrones_categoria_originales",
+  n = 10
+)
+
+safe_write_tsv(
+  category_patterns_tbl,
+  file.path(dir_qc, "06_patrones_categoria_originales.tsv"),
+  reason = "Registrar los patrones originales usados para asignar KOs a categorías funcionales."
+)
+
+log_msg("Patrones de categoría definidos exactamente como en el protocolo base.")
+
+# ------------------------------------------------------------
+# 6.3 Función original para asignar categoría
+# ------------------------------------------------------------
+
+assign_category <- function(name) {
+  name_low <- tolower(name %||% "")
+  cats <- names(Filter(function(pat) stringr::str_detect(name_low, pat), category_patterns))
+  if (length(cats) == 0) return(NA_character_)
+  paste(cats, collapse = ";")
+}
+
+log_msg("Función assign_category() definida como en el protocolo base.")
+log_msg("Razón: asignar categorías funcionales a partir del texto de ko_name.")
+
+# ------------------------------------------------------------
+# 6.4 Asignar KOs a categorías funcionales
+# ------------------------------------------------------------
+
+genesets_by_category <- ko_by_sample %>%
+  dplyr::mutate(
+    category = vapply(ko_name, assign_category, character(1))
+  ) %>%
+  dplyr::filter(!is.na(category)) %>%
+  dplyr::select(KO, ko_name, category)
+
+log_table(
+  genesets_by_category,
+  "06_genesets_by_category",
+  n = 20
+)
+
+genesets_summary <- genesets_by_category %>%
+  dplyr::count(category, name = "n_KOs") %>%
+  dplyr::arrange(category)
+
+log_table(
+  genesets_summary,
+  "06_resumen_KOs_por_categoria",
+  n = 20
+)
+
+safe_write_tsv(
+  genesets_by_category,
+  file.path(dir_tables, "genesets_by_category.tsv"),
+  reason = "Guardar la tabla de KOs asignados a categorías funcionales; alimenta category_abundance y análisis diferenciales."
+)
+
+safe_write_tsv(
+  genesets_summary,
+  file.path(dir_qc, "06_resumen_KOs_por_categoria.tsv"),
+  reason = "Registrar cuántos KOs fueron asignados a cada categoría funcional."
+)
+
+if (nrow(genesets_by_category) == 0) {
+  log_msg("ERROR: Ningún KO fue asignado a categorías funcionales.")
+  stop("No se detectaron genesets por categoría. Revisar ko_name y patrones originales.")
+}
+
+log_msg("Asignación de KOs a categorías completada.")
+
+# ------------------------------------------------------------
+# 6.5 Construir abundancia por categoría
+# ------------------------------------------------------------
+
+log_msg("Construyendo category_abundance exactamente como en el protocolo base:")
+log_msg("1) inner_join entre ko_by_sample y genesets_by_category.")
+log_msg("2) Agrupar por category.")
+log_msg("3) Sumar abundancias de todos los KOs dentro de cada categoría.")
+
+category_abundance <- ko_by_sample %>%
+  dplyr::inner_join(
+    genesets_by_category,
+    by = c("KO", "ko_name")
+  ) %>%
+  dplyr::group_by(category) %>%
+  dplyr::summarise(
+    dplyr::across(
+      dplyr::all_of(sample_cols),
+      sum
+    ),
+    .groups = "drop"
+  )
+
+log_table(
+  category_abundance,
+  "06_category_abundance",
+  n = 20
+)
+
+category_abundance_summary <- tibble::tibble(
+  object = "category_abundance",
+  n_rows = nrow(category_abundance),
+  n_cols = ncol(category_abundance),
+  categories = paste(category_abundance$category, collapse = " | ")
+)
+
+log_table(
+  category_abundance_summary,
+  "06_resumen_category_abundance",
+  n = 10
+)
+
+safe_write_tsv(
+  category_abundance,
+  file.path(dir_tables, "category_abundance.tsv"),
+  reason = "Guardar abundancias sumadas por categoría funcional y muestra; esta tabla alimenta la transformación CLR por categoría."
+)
+
+safe_write_tsv(
+  category_abundance_summary,
+  file.path(dir_qc, "06_resumen_category_abundance.tsv"),
+  reason = "Registrar dimensiones y categorías presentes en category_abundance."
+)
+
+# ------------------------------------------------------------
+# 6.6 Revisión de abundancias por categoría y muestra
+# ------------------------------------------------------------
+
+category_sums_long <- category_abundance %>%
+  tidyr::pivot_longer(
+    cols = dplyr::all_of(sample_cols),
+    names_to = "sample_column",
+    values_to = "abundance"
+  ) %>%
+  dplyr::left_join(metadata, by = "sample_column") %>%
+  dplyr::group_by(category, Desierto) %>%
+  dplyr::summarise(
+    n_samples = dplyr::n(),
+    min_abundance = min(abundance, na.rm = TRUE),
+    max_abundance = max(abundance, na.rm = TRUE),
+    mean_abundance = mean(abundance, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+log_table(
+  category_sums_long,
+  "06_revision_abundancias_por_categoria_desierto",
+  n = 30
+)
+
+safe_write_tsv(
+  category_sums_long,
+  file.path(dir_qc, "06_revision_abundancias_por_categoria_desierto.tsv"),
+  reason = "Revisar rangos de abundancia por categoría y desierto antes de la transformación composicional."
+)
+
+# ------------------------------------------------------------
+# 6.7 Guardar objetos R
+# ------------------------------------------------------------
+
+saveRDS(
+  category_patterns,
+  file.path(dir_objects, "06_category_patterns.rds")
+)
+
+saveRDS(
+  genesets_by_category,
+  file.path(dir_objects, "06_genesets_by_category.rds")
+)
+
+saveRDS(
+  category_abundance,
+  file.path(dir_objects, "06_category_abundance.rds")
+)
+
+log_msg("Objetos R guardados:")
+log_msg("- 06_category_patterns.rds")
+log_msg("- 06_genesets_by_category.rds")
+log_msg("- 06_category_abundance.rds")
+
+log_msg("Archivos principales guardados:")
+log_msg("- ", file.path(dir_tables, "genesets_by_category.tsv"))
+log_msg("- ", file.path(dir_tables, "category_abundance.tsv"))
+
+log_msg("Bloque 6 completado correctamente en modo reproducibilidad estricta.")
+```
+
+```{r bloque_6B_verificacion_categorias_salida, message=TRUE, warning=TRUE}
+# ============================================================
+# BLOQUE 6B. VERIFICACIÓN ESTRICTA DE CATEGORÍAS DE SALIDA
+# ============================================================
+
+log_section("BLOQUE 6B. Verificación estricta de categorías de salida")
+
+log_msg("Razón del bloque:")
+log_msg("Verificar que las categorías funcionales generadas coincidan con el protocolo original.")
+log_msg("Aunque hay 4 patrones base, el protocolo original genera 5 categorías analíticas.")
+log_msg("La categoría Glucosa_central;UV_repair aparece cuando un KO coincide con ambos patrones.")
+
+category_abundance <- readRDS(file.path(dir_objects, "06_category_abundance.rds"))
+genesets_by_category <- readRDS(file.path(dir_objects, "06_genesets_by_category.rds"))
+
+expected_output_categories <- c(
+  "Glucosa_central",
+  "Glucosa_central;UV_repair",
+  "Nitrogen",
+  "Photosynthesis",
+  "UV_repair"
+)
+
+observed_output_categories <- sort(unique(category_abundance$category))
+
+category_output_check <- tibble::tibble(
+  category = union(expected_output_categories, observed_output_categories),
+  expected_in_original_protocol = category %in% expected_output_categories,
+  observed_in_current_run = category %in% observed_output_categories
+)
+
+log_table(
+  category_output_check,
+  "06B_verificacion_categorias_salida",
+  n = 20
+)
+
+safe_write_tsv(
+  category_output_check,
+  file.path(dir_qc, "06B_verificacion_categorias_salida.tsv"),
+  reason = "Confirmar que las categorías generadas coinciden con las categorías del protocolo original."
+)
+
+missing_categories <- setdiff(expected_output_categories, observed_output_categories)
+extra_categories <- setdiff(observed_output_categories, expected_output_categories)
+
+if (length(missing_categories) > 0) {
+  log_msg("ERROR: Faltan categorías esperadas del protocolo original.")
+  log_msg("Categorías faltantes: ", paste(missing_categories, collapse = ", "))
+  stop("Estructura no reproducible: faltan categorías de salida esperadas.")
+}
+
+if (length(extra_categories) > 0) {
+  log_msg("ERROR: Aparecieron categorías adicionales no esperadas.")
+  log_msg("Categorías adicionales: ", paste(extra_categories, collapse = ", "))
+  stop("Estructura no reproducible: hay categorías de salida adicionales.")
+}
+
+log_msg("Verificación correcta: las 5 categorías de salida coinciden con el protocolo original.")
+log_msg("Categorías confirmadas: ", paste(observed_output_categories, collapse = " | "))
+
+# Guardar también una tabla con el número de KOs por categoría,
+# incluyendo explícitamente la categoría combinada.
+genesets_category_counts <- genesets_by_category %>%
+  dplyr::count(category, name = "n_KOs") %>%
+  dplyr::arrange(category)
+
+log_table(
+  genesets_category_counts,
+  "06B_numero_KOs_por_categoria_confirmada",
+  n = 20
+)
+
+safe_write_tsv(
+  genesets_category_counts,
+  file.path(dir_qc, "06B_numero_KOs_por_categoria_confirmada.tsv"),
+  reason = "Registrar cuántos KOs alimentan cada una de las 5 categorías finales del protocolo original."
+)
+
+saveRDS(
+  expected_output_categories,
+  file.path(dir_objects, "06B_expected_output_categories.rds")
+)
+
+log_msg("Bloque 6B completado correctamente.")
+```
+```{r bloque_7_transformacion_CLR, message=TRUE, warning=TRUE}
+# ============================================================
+# BLOQUE 7. TRANSFORMACIÓN COMPOSICIONAL CLR
+# ============================================================
+
+log_section("BLOQUE 7. Transformación composicional CLR")
+
+log_msg("Razón del bloque:")
+log_msg("Aplicar la transformación composicional usada en el protocolo original.")
+log_msg("Primero se convierten las abundancias a proporciones por muestra.")
+log_msg("Después se agrega pseudoconteo por muestra: mitad del mínimo positivo.")
+log_msg("Finalmente se aplica CLR = log(x) - media(log(x)) por muestra.")
+log_msg("Este bloque genera las tablas que alimentan Wilcoxon, volcano plots, violines y lollipop plots.")
+
+# ------------------------------------------------------------
+# 7.1 Cargar objetos necesarios
+# ------------------------------------------------------------
+
+category_abundance <- readRDS(file.path(dir_objects, "06_category_abundance.rds"))
+genesets_by_category <- readRDS(file.path(dir_objects, "06_genesets_by_category.rds"))
+ko_by_sample <- readRDS(file.path(dir_objects, "05_KO_by_sample.rds"))
+sample_cols <- readRDS(file.path(dir_objects, "02B_sample_cols.rds"))
+metadata <- readRDS(file.path(dir_objects, "03_metadata_ordenada_como_sample_cols.rds"))
+
+log_msg("Objetos cargados:")
+log_msg("- category_abundance")
+log_msg("- genesets_by_category")
+log_msg("- ko_by_sample")
+log_msg("- sample_cols")
+log_msg("- metadata")
+
+log_msg("Dimensiones de category_abundance: ", nrow(category_abundance), " filas x ", ncol(category_abundance), " columnas")
+log_msg("Dimensiones de ko_by_sample: ", nrow(ko_by_sample), " filas x ", ncol(ko_by_sample), " columnas")
+
+# ------------------------------------------------------------
+# 7.2 Funciones originales de transformación composicional
+# ------------------------------------------------------------
+
+to_proportions <- function(df, sample_cols) {
+  mat <- as.matrix(df[, sample_cols, drop = FALSE])
+  col_sums <- colSums(mat)
+  mat <- sweep(mat, 2, col_sums, FUN = "/")
+  df[, sample_cols] <- mat
+  df
+}
+
+pseudocount_per_sample <- function(df, sample_cols) {
+  mat <- as.matrix(df[, sample_cols, drop = FALSE])
+  for (j in seq_len(ncol(mat))) {
+    col <- mat[, j]
+    min_pos <- suppressWarnings(min(col[col > 0], na.rm = TRUE))
+    if (is.finite(min_pos)) {
+      pseudo <- min_pos / 2
+      col <- col + pseudo
+    }
+    mat[, j] <- col
+  }
+  df[, sample_cols] <- mat
+  df
+}
+
+clr_transform <- function(df, sample_cols) {
+  mat <- as.matrix(df[, sample_cols, drop = FALSE])
+  log_mat <- log(mat)
+  means <- colMeans(log_mat)
+  clr_mat <- sweep(log_mat, 2, means, FUN = "-")
+  df[, sample_cols] <- clr_mat
+  df
+}
+
+log_msg("Funciones originales definidas:")
+log_msg("- to_proportions()")
+log_msg("- pseudocount_per_sample()")
+log_msg("- clr_transform()")
+log_msg("No se modificó la regla de pseudoconteo ni la fórmula CLR.")
+
+# ------------------------------------------------------------
+# 7.3 Control de sumas antes de proporciones
+# ------------------------------------------------------------
+
+category_col_sums_before <- tibble::tibble(
+  sample_column = sample_cols,
+  sum_category_abundance = sapply(sample_cols, function(s) sum(category_abundance[[s]], na.rm = TRUE))
+)
+
+ko_col_sums_before <- tibble::tibble(
+  sample_column = sample_cols,
+  sum_KO_abundance = sapply(sample_cols, function(s) sum(ko_by_sample[[s]], na.rm = TRUE))
+)
+
+log_table(
+  category_col_sums_before,
+  "07_sumas_category_abundance_antes_CLR",
+  n = 30
+)
+
+log_table(
+  ko_col_sums_before,
+  "07_sumas_KO_by_sample_antes_CLR",
+  n = 30
+)
+
+safe_write_tsv(
+  category_col_sums_before,
+  file.path(dir_qc, "07_sumas_category_abundance_antes_CLR.tsv"),
+  reason = "Registrar las sumas por muestra antes de convertir categorías a proporciones."
+)
+
+safe_write_tsv(
+  ko_col_sums_before,
+  file.path(dir_qc, "07_sumas_KO_by_sample_antes_CLR.tsv"),
+  reason = "Registrar las sumas por muestra antes de convertir KOs a proporciones."
+)
+
+if (any(category_col_sums_before$sum_category_abundance <= 0)) {
+  log_msg("ERROR: Alguna muestra tiene suma cero en category_abundance.")
+  stop("No se puede aplicar transformación composicional a category_abundance con suma cero.")
+}
+
+if (any(ko_col_sums_before$sum_KO_abundance <= 0)) {
+  log_msg("ERROR: Alguna muestra tiene suma cero en ko_by_sample.")
+  stop("No se puede aplicar transformación composicional a ko_by_sample con suma cero.")
+}
+
+log_msg("Verificación correcta: todas las muestras tienen suma positiva antes de la transformación.")
+
+# ------------------------------------------------------------
+# 7.4 CLR por categoría funcional
+# ------------------------------------------------------------
+
+log_msg("Aplicando transformación CLR a category_abundance con la lógica original.")
+
+cat_clr <- category_abundance %>%
+  to_proportions(sample_cols) %>%
+  pseudocount_per_sample(sample_cols) %>%
+  clr_transform(sample_cols)
+
+log_table(
+  cat_clr,
+  "07_cat_clr",
+  n = 10
+)
+
+cat_clr_long <- cat_clr %>%
+  tidyr::pivot_longer(
+    cols = dplyr::all_of(sample_cols),
+    names_to = "sample_column",
+    values_to = "CLR"
+  ) %>%
+  dplyr::left_join(metadata, by = "sample_column")
+
+log_table(
+  cat_clr_long,
+  "07_cat_clr_long",
+  n = 20
+)
+
+safe_write_tsv(
+  cat_clr,
+  file.path(dir_tables, "cat_clr.tsv"),
+  reason = "Guardar abundancias CLR por categoría funcional y muestra."
+)
+
+safe_write_tsv(
+  cat_clr_long,
+  file.path(dir_tables, "cat_clr_long.tsv"),
+  reason = "Guardar tabla larga de CLR por categoría, muestra y desierto para análisis estadístico y violines."
+)
+
+# ------------------------------------------------------------
+# 7.5 Revisar datos válidos por categoría y desierto
+# ------------------------------------------------------------
+
+cat_valid_counts <- cat_clr_long %>%
+  dplyr::group_by(category, Desierto) %>%
+  dplyr::summarise(
+    n_total = dplyr::n(),
+    n_valid_CLR = sum(!is.na(CLR)),
+    n_NA_CLR = sum(is.na(CLR)),
+    min_CLR = min(CLR, na.rm = TRUE),
+    max_CLR = max(CLR, na.rm = TRUE),
+    mean_CLR = mean(CLR, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::arrange(category, Desierto)
+
+log_table(
+  cat_valid_counts,
+  "07_conteo_CLR_valido_por_categoria_desierto",
+  n = 30
+)
+
+safe_write_tsv(
+  cat_valid_counts,
+  file.path(dir_qc, "07_conteo_CLR_valido_por_categoria_desierto.tsv"),
+  reason = "Verificar que cada categoría tenga valores CLR válidos en CC y VG."
+)
+
+if (any(cat_valid_counts$n_valid_CLR == 0)) {
+  log_msg("ERROR: Alguna categoría/desierto no tiene valores CLR válidos.")
+  stop("No se puede continuar con estadística diferencial por categoría.")
+}
+
+log_msg("Verificación correcta: todas las categorías tienen valores CLR válidos por desierto.")
+
+# ------------------------------------------------------------
+# 7.6 CLR por KO
+# ------------------------------------------------------------
+
+log_msg("Construyendo matriz KO para transformación CLR.")
+
+ko_abundance <- ko_by_sample %>%
+  dplyr::select(KO, ko_name, dplyr::all_of(sample_cols))
+
+ko_prevalence <- ko_abundance %>%
+  dplyr::mutate(
+    prevalence = rowMeans(dplyr::across(dplyr::all_of(sample_cols), ~ .x > 0))
+  ) %>%
+  dplyr::select(KO, prevalence)
+
+log_table(
+  ko_prevalence,
+  "07_ko_prevalence",
+  n = 10
+)
+
+safe_write_tsv(
+  ko_prevalence,
+  file.path(dir_tables, "ko_prevalence.tsv"),
+  reason = "Guardar prevalencia de cada KO antes del filtro prevalence >= 0.20 usado en el protocolo original."
+)
+
+log_msg("Aplicando transformación CLR a KO abundance con la lógica original.")
+
+ko_clr <- ko_abundance %>%
+  to_proportions(sample_cols) %>%
+  pseudocount_per_sample(sample_cols) %>%
+  clr_transform(sample_cols)
+
+log_table(
+  ko_clr,
+  "07_ko_clr",
+  n = 10
+)
+
+ko_clr_long <- ko_clr %>%
+  tidyr::pivot_longer(
+    cols = dplyr::all_of(sample_cols),
+    names_to = "sample_column",
+    values_to = "CLR"
+  ) %>%
+  dplyr::left_join(metadata, by = "sample_column") %>%
+  dplyr::left_join(genesets_by_category, by = c("KO", "ko_name"))
+
+log_table(
+  ko_clr_long,
+  "07_ko_clr_long",
+  n = 20
+)
+
+safe_write_tsv(
+  ko_clr,
+  file.path(dir_tables, "ko_clr.tsv"),
+  reason = "Guardar abundancias CLR por KO y muestra."
+)
+
+safe_write_tsv(
+  ko_clr_long,
+  file.path(dir_tables, "ko_clr_long.tsv"),
+  reason = "Guardar tabla larga de CLR por KO, muestra, desierto y categoría funcional."
+)
+
+# ------------------------------------------------------------
+# 7.7 Revisar categorías en ko_clr_long
+# ------------------------------------------------------------
+
+ko_clr_category_summary <- ko_clr_long %>%
+  dplyr::filter(!is.na(category)) %>%
+  dplyr::group_by(category, Desierto) %>%
+  dplyr::summarise(
+    n_observations = dplyr::n(),
+    n_distinct_KO = dplyr::n_distinct(KO),
+    n_valid_CLR = sum(!is.na(CLR)),
+    min_CLR = min(CLR, na.rm = TRUE),
+    max_CLR = max(CLR, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::arrange(category, Desierto)
+
+log_table(
+  ko_clr_category_summary,
+  "07_resumen_ko_clr_por_categoria_desierto",
+  n = 30
+)
+
+safe_write_tsv(
+  ko_clr_category_summary,
+  file.path(dir_qc, "07_resumen_ko_clr_por_categoria_desierto.tsv"),
+  reason = "Verificar que la tabla larga de KOs tenga datos CLR válidos por categoría y desierto."
+)
+
+# ------------------------------------------------------------
+# 7.8 Guardar objetos R
+# ------------------------------------------------------------
+
+saveRDS(
+  cat_clr,
+  file.path(dir_objects, "07_cat_clr.rds")
+)
+
+saveRDS(
+  cat_clr_long,
+  file.path(dir_objects, "07_cat_clr_long.rds")
+)
+
+saveRDS(
+  ko_abundance,
+  file.path(dir_objects, "07_ko_abundance.rds")
+)
+
+saveRDS(
+  ko_prevalence,
+  file.path(dir_objects, "07_ko_prevalence.rds")
+)
+
+saveRDS(
+  ko_clr,
+  file.path(dir_objects, "07_ko_clr.rds")
+)
+
+saveRDS(
+  ko_clr_long,
+  file.path(dir_objects, "07_ko_clr_long.rds")
+)
+
+log_msg("Objetos R guardados:")
+log_msg("- 07_cat_clr.rds")
+log_msg("- 07_cat_clr_long.rds")
+log_msg("- 07_ko_abundance.rds")
+log_msg("- 07_ko_prevalence.rds")
+log_msg("- 07_ko_clr.rds")
+log_msg("- 07_ko_clr_long.rds")
+
+log_msg("Archivos principales guardados:")
+log_msg("- ", file.path(dir_tables, "cat_clr.tsv"))
+log_msg("- ", file.path(dir_tables, "cat_clr_long.tsv"))
+log_msg("- ", file.path(dir_tables, "ko_prevalence.tsv"))
+log_msg("- ", file.path(dir_tables, "ko_clr.tsv"))
+log_msg("- ", file.path(dir_tables, "ko_clr_long.tsv"))
+
+log_msg("Bloque 7 completado correctamente en modo reproducibilidad estricta.")
+
+```
+
+
+```{r bloque_8_analisis_diferencial, message=TRUE, warning=TRUE}
+# ============================================================
+# BLOQUE 8. ANÁLISIS DIFERENCIAL POR CATEGORÍA Y POR KO
+# ============================================================
+
+log_section("BLOQUE 8. Análisis diferencial por categoría y por KO")
+
+log_msg("Razón del bloque:")
+log_msg("Calcular diferencias de CLR entre desiertos usando el análisis base.")
+log_msg("Se calcula diff_meanCLR = mean_CLR_VG - mean_CLR_CC.")
+log_msg("Se usa Wilcoxon rank-sum test y corrección Benjamini-Hochberg.")
+log_msg("También se calcula Cliff's delta como tamaño de efecto.")
+log_msg("No se modifican umbrales ni fórmulas del protocolo original.")
+
+# ------------------------------------------------------------
+# 8.1 Cargar objetos necesarios
+# ------------------------------------------------------------
+
+cat_clr_long <- readRDS(file.path(dir_objects, "07_cat_clr_long.rds"))
+ko_clr_long <- readRDS(file.path(dir_objects, "07_ko_clr_long.rds"))
+ko_prevalence <- readRDS(file.path(dir_objects, "07_ko_prevalence.rds"))
+sample_cols <- readRDS(file.path(dir_objects, "02B_sample_cols.rds"))
+metadata <- readRDS(file.path(dir_objects, "03_metadata_ordenada_como_sample_cols.rds"))
+
+log_msg("Objetos cargados:")
+log_msg("- cat_clr_long")
+log_msg("- ko_clr_long")
+log_msg("- ko_prevalence")
+log_msg("- sample_cols")
+log_msg("- metadata")
+
+log_msg("Dimensiones de cat_clr_long: ", nrow(cat_clr_long), " filas x ", ncol(cat_clr_long), " columnas")
+log_msg("Dimensiones de ko_clr_long: ", nrow(ko_clr_long), " filas x ", ncol(ko_clr_long), " columnas")
+
+# ------------------------------------------------------------
+# 8.2 Función original de Cliff's delta
+# ------------------------------------------------------------
+
+cliffs_delta <- function(x, g) {
+  x <- x[!is.na(x)]
+  g <- g[!is.na(g)]
+  stopifnot(length(x) == length(g))
+  
+  grupos <- levels(factor(g))
+  if (length(grupos) != 2) stop("cliffs_delta necesita exactamente 2 grupos.")
+  
+  x1 <- x[g == grupos[1]]
+  x2 <- x[g == grupos[2]]
+  
+  diffs <- outer(x1, x2, "-")
+  delta <- (sum(diffs > 0) - sum(diffs < 0)) / (length(x1) * length(x2))
+  
+  delta
+}
+
+log_msg("Función cliffs_delta() definida como en el protocolo base.")
+log_msg("Nota: el orden de grupos se mantiene como CC y VG por el factor Desierto.")
+
+# ------------------------------------------------------------
+# 8.3 Verificación de datos por categoría antes de Wilcoxon
+# ------------------------------------------------------------
+
+category_test_input_check <- cat_clr_long %>%
+  dplyr::group_by(category, Desierto) %>%
+  dplyr::summarise(
+    n = dplyr::n(),
+    n_valid_CLR = sum(!is.na(CLR)),
+    mean_CLR = mean(CLR, na.rm = TRUE),
+    sd_CLR = sd(CLR, na.rm = TRUE),
+    min_CLR = min(CLR, na.rm = TRUE),
+    max_CLR = max(CLR, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::arrange(category, Desierto)
+
+log_table(
+  category_test_input_check,
+  "08_revision_input_Wilcoxon_categoria",
+  n = 30
+)
+
+safe_write_tsv(
+  category_test_input_check,
+  file.path(dir_qc, "08_revision_input_Wilcoxon_categoria.tsv"),
+  reason = "Documentar los valores que alimentan Wilcoxon por categoría y desierto."
+)
+
+if (any(category_test_input_check$n_valid_CLR == 0)) {
+  log_msg("ERROR: Hay categorías/desiertos sin valores CLR válidos.")
+  stop("No se puede calcular Wilcoxon por categoría.")
+}
+
+log_msg("Verificación correcta: todas las categorías tienen valores CLR válidos en CC y VG.")
+
+# ------------------------------------------------------------
+# 8.4 Análisis diferencial por categoría
+# ------------------------------------------------------------
+
+log_msg("Calculando análisis diferencial por categoría.")
+log_msg("Fórmula original: diff_meanCLR = mean_CLR_VG - mean_CLR_CC.")
+log_msg("Prueba: wilcox.test(CLR[VG], CLR[CC]).")
+log_msg("Corrección: p.adjust(p_value, method = 'BH').")
+
+category_diff <- cat_clr_long %>%
+  dplyr::group_by(category) %>%
+  dplyr::summarise(
+    n_CC = sum(Desierto == "CC"),
+    n_VG = sum(Desierto == "VG"),
+    mean_CLR_CC = mean(CLR[Desierto == "CC"], na.rm = TRUE),
+    mean_CLR_VG = mean(CLR[Desierto == "VG"], na.rm = TRUE),
+    diff_meanCLR = mean_CLR_VG - mean_CLR_CC,
+    p_value = wilcox.test(CLR[Desierto == "VG"], CLR[Desierto == "CC"])$p.value,
+    cliffs_delta = cliffs_delta(CLR, Desierto),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    p_adj = p.adjust(p_value, method = "BH")
+  ) %>%
+  dplyr::arrange(p_adj)
+
+log_table(
+  category_diff,
+  "08_category_diff",
+  n = 20
+)
+
+safe_write_tsv(
+  category_diff,
+  file.path(dir_tables, "category_differential.tsv"),
+  reason = "Tabla diferencial por categoría funcional; alimenta forest plot y resumen estadístico."
+)
+
+category_diff_summary <- tibble::tibble(
+  object = "category_diff",
+  n_categories = nrow(category_diff),
+  min_p_value = min(category_diff$p_value, na.rm = TRUE),
+  max_p_value = max(category_diff$p_value, na.rm = TRUE),
+  min_p_adj = min(category_diff$p_adj, na.rm = TRUE),
+  max_p_adj = max(category_diff$p_adj, na.rm = TRUE),
+  n_significant_q_0_05 = sum(category_diff$p_adj < 0.05, na.rm = TRUE),
+  n_significant_q_0_10 = sum(category_diff$p_adj <= 0.1, na.rm = TRUE)
+)
+
+log_table(
+  category_diff_summary,
+  "08_resumen_category_diff",
+  n = 10
+)
+
+safe_write_tsv(
+  category_diff_summary,
+  file.path(dir_qc, "08_resumen_category_diff.tsv"),
+  reason = "Registrar resumen del análisis diferencial por categoría."
+)
+
+# ------------------------------------------------------------
+# 8.5 Verificación de datos por KO antes de Wilcoxon
+# ------------------------------------------------------------
+
+ko_test_input_check <- ko_clr_long %>%
+  dplyr::filter(!is.na(category)) %>%
+  dplyr::group_by(category, KO, ko_name, Desierto) %>%
+  dplyr::summarise(
+    n = dplyr::n(),
+    n_valid_CLR = sum(!is.na(CLR)),
+    mean_CLR = mean(CLR, na.rm = TRUE),
+    sd_CLR = sd(CLR, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+ko_test_summary <- ko_test_input_check %>%
+  dplyr::group_by(category, Desierto) %>%
+  dplyr::summarise(
+    n_KO_desert_groups = dplyr::n(),
+    min_n_valid_CLR = min(n_valid_CLR, na.rm = TRUE),
+    max_n_valid_CLR = max(n_valid_CLR, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::arrange(category, Desierto)
+
+log_table(
+  ko_test_summary,
+  "08_revision_input_Wilcoxon_KO_resumen",
+  n = 30
+)
+
+safe_write_tsv(
+  ko_test_summary,
+  file.path(dir_qc, "08_revision_input_Wilcoxon_KO_resumen.tsv"),
+  reason = "Documentar que los KOs por categoría tienen valores para CC y VG antes de Wilcoxon."
+)
+
+safe_write_tsv(
+  ko_test_input_check,
+  file.path(dir_qc, "08_revision_input_Wilcoxon_KO_detalle.tsv"),
+  reason = "Guardar revisión detallada de valores por KO, categoría y desierto antes de Wilcoxon."
+)
+
+# ------------------------------------------------------------
+# 8.6 Análisis diferencial por KO
+# ------------------------------------------------------------
+
+log_msg("Calculando análisis diferencial por KO dentro de categorías.")
+log_msg("Fórmula original: diff_meanCLR = mean_CLR_VG - mean_CLR_CC.")
+log_msg("Prueba: wilcox.test(CLR[VG], CLR[CC]).")
+log_msg("Filtro original posterior: prevalence >= 0.20.")
+log_msg("Corrección BH aplicada después del filtro de prevalencia, como en el protocolo base.")
+
+ko_diff_all <- ko_clr_long %>%
+  dplyr::filter(!is.na(category)) %>%
+  dplyr::group_by(category, KO, ko_name) %>%
+  dplyr::summarise(
+    n_CC = sum(Desierto == "CC"),
+    n_VG = sum(Desierto == "VG"),
+    mean_CLR_CC = mean(CLR[Desierto == "CC"], na.rm = TRUE),
+    mean_CLR_VG = mean(CLR[Desierto == "VG"], na.rm = TRUE),
+    diff_meanCLR = mean_CLR_VG - mean_CLR_CC,
+    p_value = wilcox.test(CLR[Desierto == "VG"], CLR[Desierto == "CC"])$p.value,
+    cliffs_delta = cliffs_delta(CLR, Desierto),
+    .groups = "drop"
+  ) %>%
+  dplyr::left_join(
+    ko_prevalence,
+    by = "KO"
+  ) %>%
+  dplyr::filter(prevalence >= 0.20) %>%
+  dplyr::mutate(
+    p_adj = p.adjust(p_value, method = "BH")
+  ) %>%
+  dplyr::arrange(category, p_adj)
+
+log_table(
+  ko_diff_all,
+  "08_ko_diff_all",
+  n = 20
+)
+
+safe_write_tsv(
+  ko_diff_all,
+  file.path(dir_tables, "KO_differential_all_categories.tsv"),
+  reason = "Tabla diferencial por KO dentro de categorías; alimenta volcano plots, heatmaps y lollipop plots."
+)
+
+# ------------------------------------------------------------
+# 8.7 Resumen del análisis diferencial por KO
+# ------------------------------------------------------------
+
+ko_diff_summary_by_category <- ko_diff_all %>%
+  dplyr::group_by(category) %>%
+  dplyr::summarise(
+    n_KOs_after_prevalence_filter = dplyr::n(),
+    min_p_value = min(p_value, na.rm = TRUE),
+    max_p_value = max(p_value, na.rm = TRUE),
+    min_p_adj = min(p_adj, na.rm = TRUE),
+    max_p_adj = max(p_adj, na.rm = TRUE),
+    n_q_0_05 = sum(p_adj < 0.05, na.rm = TRUE),
+    n_q_0_10 = sum(p_adj <= 0.1, na.rm = TRUE),
+    n_VG_enriched = sum(diff_meanCLR > 0, na.rm = TRUE),
+    n_CC_enriched = sum(diff_meanCLR < 0, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::arrange(category)
+
+log_table(
+  ko_diff_summary_by_category,
+  "08_resumen_KO_differential_por_categoria",
+  n = 20
+)
+
+safe_write_tsv(
+  ko_diff_summary_by_category,
+  file.path(dir_qc, "08_resumen_KO_differential_por_categoria.tsv"),
+  reason = "Registrar número de KOs diferenciales por categoría y dirección de enriquecimiento."
+)
+
+# ------------------------------------------------------------
+# 8.8 Tabla específica de KOs significativos para lollipop/heatmap
+# ------------------------------------------------------------
+
+ko_sig_q_0_10 <- ko_diff_all %>%
+  dplyr::filter(p_adj <= 0.1, !is.na(cliffs_delta)) %>%
+  dplyr::mutate(
+    direction = dplyr::if_else(diff_meanCLR > 0, "VG>CC", "CC>VG")
+  ) %>%
+  dplyr::arrange(category, p_adj)
+
+log_table(
+  ko_sig_q_0_10,
+  "08_KOs_significativos_q_0_10",
+  n = 30
+)
+
+safe_write_tsv(
+  ko_sig_q_0_10,
+  file.path(dir_tables, "KO_significant_q_0_10.tsv"),
+  reason = "Guardar KOs con q <= 0.1, usados en lollipop plots y heatmaps."
+)
+
+ko_sig_summary <- ko_sig_q_0_10 %>%
+  dplyr::group_by(category, direction) %>%
+  dplyr::summarise(
+    n_KOs = dplyr::n(),
+    .groups = "drop"
+  ) %>%
+  dplyr::arrange(category, direction)
+
+log_table(
+  ko_sig_summary,
+  "08_resumen_KOs_significativos_q_0_10",
+  n = 20
+)
+
+safe_write_tsv(
+  ko_sig_summary,
+  file.path(dir_qc, "08_resumen_KOs_significativos_q_0_10.tsv"),
+  reason = "Registrar cuántos KOs significativos hay por categoría y dirección."
+)
+
+# ------------------------------------------------------------
+# 8.9 Guardar objetos R
+# ------------------------------------------------------------
+
+saveRDS(
+  category_diff,
+  file.path(dir_objects, "08_category_diff.rds")
+)
+
+saveRDS(
+  ko_diff_all,
+  file.path(dir_objects, "08_KO_differential_all_categories.rds")
+)
+
+saveRDS(
+  ko_sig_q_0_10,
+  file.path(dir_objects, "08_KO_significant_q_0_10.rds")
+)
+
+log_msg("Objetos R guardados:")
+log_msg("- 08_category_diff.rds")
+log_msg("- 08_KO_differential_all_categories.rds")
+log_msg("- 08_KO_significant_q_0_10.rds")
+
+log_msg("Archivos principales guardados:")
+log_msg("- ", file.path(dir_tables, "category_differential.tsv"))
+log_msg("- ", file.path(dir_tables, "KO_differential_all_categories.tsv"))
+log_msg("- ", file.path(dir_tables, "KO_significant_q_0_10.tsv"))
+
+log_msg("Bloque 8 completado correctamente en modo reproducibilidad estricta.")
+
+
+
+
+```
+```{r bloque_9_figura_violin_CLR_categoria, message=TRUE, warning=TRUE}
+# ============================================================
+# BLOQUE 9. FIGURA VIOLIN CLR POR CATEGORÍA Y DESIERTO
+# ============================================================
+
+log_section("BLOQUE 9. Figura violin CLR por categoría y desierto")
+
+log_msg("Razón del bloque:")
+log_msg("Generar la figura de distribución CLR por categoría funcional y desierto.")
+log_msg("Esta figura usa la tabla cat_clr_long generada en el Bloque 7.")
+log_msg("No se recalculan valores; solo se grafica el resultado CLR ya obtenido.")
+
+# ------------------------------------------------------------
+# 9.1 Cargar objetos necesarios
+# ------------------------------------------------------------
+
+cat_clr_long <- readRDS(file.path(dir_objects, "07_cat_clr_long.rds"))
+
+log_msg("Objeto cargado: 07_cat_clr_long.rds")
+log_msg("Dimensiones de cat_clr_long: ", nrow(cat_clr_long), " filas x ", ncol(cat_clr_long), " columnas")
+
+# ------------------------------------------------------------
+# 9.2 Verificar categorías esperadas
+# ------------------------------------------------------------
+
+expected_output_categories <- c(
+  "Glucosa_central",
+  "Glucosa_central;UV_repair",
+  "Nitrogen",
+  "Photosynthesis",
+  "UV_repair"
+)
+
+observed_categories <- sort(unique(cat_clr_long$category))
+
+violin_category_check <- tibble::tibble(
+  category = union(expected_output_categories, observed_categories),
+  expected_in_original_protocol = category %in% expected_output_categories,
+  observed_in_current_run = category %in% observed_categories
+)
+
+log_table(
+  violin_category_check,
+  "09_verificacion_categorias_para_violin",
+  n = 20
+)
+
+safe_write_tsv(
+  violin_category_check,
+  file.path(dir_qc, "09_verificacion_categorias_para_violin.tsv"),
+  reason = "Confirmar que la figura violin se hará con las 5 categorías del protocolo original."
+)
+
+if (!setequal(expected_output_categories, observed_categories)) {
+  log_msg("ERROR: Las categorías observadas no coinciden con las esperadas para la figura original.")
+  log_msg("Esperadas: ", paste(expected_output_categories, collapse = " | "))
+  log_msg("Observadas: ", paste(observed_categories, collapse = " | "))
+  stop("No se genera la figura porque las categorías no coinciden con el protocolo original.")
+}
+
+log_msg("Verificación correcta: las categorías coinciden con el protocolo original.")
+
+# ------------------------------------------------------------
+# 9.3 Preparar tabla de graficación sin modificar valores
+# ------------------------------------------------------------
+
+cat_clr_long_plot <- cat_clr_long %>%
+  dplyr::mutate(
+    category = factor(category, levels = expected_output_categories),
+    Desierto = factor(Desierto, levels = c("CC", "VG"))
+  )
+
+log_table(
+  cat_clr_long_plot,
+  "09_tabla_para_violin_CLR_categoria",
+  n = 20
+)
+
+safe_write_tsv(
+  cat_clr_long_plot,
+  file.path(dir_tables, "09_tabla_para_violin_CLR_categoria.tsv"),
+  reason = "Guardar la tabla exacta que alimenta la figura violin CLR por categoría y desierto."
+)
+
+# ------------------------------------------------------------
+# 9.4 Resumen de los valores graficados
+# ------------------------------------------------------------
+
+violin_plot_summary <- cat_clr_long_plot %>%
+  dplyr::group_by(category, Desierto) %>%
+  dplyr::summarise(
+    n = dplyr::n(),
+    mean_CLR = mean(CLR, na.rm = TRUE),
+    median_CLR = median(CLR, na.rm = TRUE),
+    min_CLR = min(CLR, na.rm = TRUE),
+    max_CLR = max(CLR, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::arrange(category, Desierto)
+
+log_table(
+  violin_plot_summary,
+  "09_resumen_valores_violin_CLR",
+  n = 30
+)
+
+safe_write_tsv(
+  violin_plot_summary,
+  file.path(dir_qc, "09_resumen_valores_violin_CLR.tsv"),
+  reason = "Registrar los valores resumidos que se visualizan en la figura violin."
+)
+
+# ------------------------------------------------------------
+# 9.5 Generar figura violin como en el protocolo original
+# ------------------------------------------------------------
+
+p_violin_cat <- ggplot(
+  cat_clr_long_plot,
+  aes(x = category, y = CLR, fill = Desierto)
+) +
+  geom_violin(trim = FALSE, alpha = 0.5) +
+  geom_jitter(width = 0.15, size = 1, alpha = 0.7) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  ) +
+  labs(
+    title = "Distribución CLR por categoría y desierto",
+    x = "Categoría funcional",
+    y = "CLR (abundancia transformada)"
+  )
+
+print(p_violin_cat)
+
+log_msg("Figura violin generada correctamente.")
+
+# ------------------------------------------------------------
+# 9.6 Guardar figura
+# ------------------------------------------------------------
+
+safe_ggsave(
+  filename = "violin_category_CLR.png",
+  plot = p_violin_cat,
+  width = 8,
+  height = 6,
+  dpi = 300,
+  reason = "Guardar la figura violin CLR por categoría y desierto con el nombre del protocolo original."
+)
+
+safe_ggsave(
+  filename = "violin_category_CLR.pdf",
+  plot = p_violin_cat,
+  width = 8,
+  height = 6,
+  reason = "Guardar versión PDF de la figura violin para revisión o publicación."
+)
+
+# ------------------------------------------------------------
+# 9.7 Guardar objeto R de la figura
+# ------------------------------------------------------------
+
+saveRDS(
+  p_violin_cat,
+  file.path(dir_objects, "09_p_violin_cat.rds")
+)
+
+log_msg("Objeto R guardado:")
+log_msg("- 09_p_violin_cat.rds")
+
+log_msg("Figuras guardadas:")
+log_msg("- ", file.path(dir_figures, "violin_category_CLR.png"))
+log_msg("- ", file.path(dir_figures, "violin_category_CLR.pdf"))
+
+log_msg("Bloque 9 completado correctamente en modo reproducibilidad estricta.")
+```
+```{r bloque_9P_violin_publication, message=TRUE, warning=TRUE}
+# ============================================================
+# BLOQUE 9P. VIOLIN PLOT DE PUBLICACIÓN (ENGLISH + STATS)
+# ============================================================
+
+log_section("BLOQUE 9P. Publication-ready violin plot")
+
+log_msg("Razón del bloque:")
+log_msg("Generar una versión lista para publicación del violin plot por categoría.")
+log_msg("No se modifican los valores del análisis; solo se ajustan etiquetas, formato, orden de categorías y anotaciones estadísticas.")
+log_msg("La figura se genera en inglés e incluye la información estadística necesaria para interpretación.")
+
+# ------------------------------------------------------------
+# 9P.1 Cargar objetos necesarios
+# ------------------------------------------------------------
+
+cat_clr_long <- readRDS(file.path(dir_objects, "07_cat_clr_long.rds"))
+category_diff <- readRDS(file.path(dir_objects, "08_category_diff.rds"))
+
+log_msg("Objetos cargados:")
+log_msg("- 07_cat_clr_long.rds")
+log_msg("- 08_category_diff.rds")
+
+# ------------------------------------------------------------
+# 9P.2 Definir categorías que aparecerán en la figura y su orden
+# ------------------------------------------------------------
+
+category_order_pub <- c(
+  "Glucosa_central",
+  "Glucosa_central;UV_repair",
+  "UV_repair",
+  "Nitrogen",
+  "Photosynthesis"
+)
+
+log_msg("Categorías incluidas en esta figura de publicación:")
+log_msg(paste(category_order_pub, collapse = " | "))
+
+log_msg("La figura incluye las 5 categorías analíticas del protocolo original.")
+log_msg("El orden de visualización fue definido para publicación: central glucose metabolism, combined glucose+UV, UV repair, nitrogen metabolism and photosynthesis.")
+
+category_labels_en <- c(
+  "Glucosa_central" = "Central glucose\nmetabolism",
+  "Glucosa_central;UV_repair" = "Central glucose metabolism\n+ UV repair",
+  "UV_repair" = "UV repair",
+  "Nitrogen" = "Nitrogen\nmetabolism",
+  "Photosynthesis" = "Photosynthesis"
+)
+
+desert_labels_en <- c(
+  "CC" = "Cuatro Ciénegas (CC)",
+  "VG" = "Valle de Guadalupe (VG)"
+)
+
+# ------------------------------------------------------------
+# 9P.3 Verificar que las categorías existan
+# ------------------------------------------------------------
+
+observed_categories <- sort(unique(as.character(cat_clr_long$category)))
+missing_categories <- setdiff(category_order_pub, observed_categories)
+
+category_check_pub <- tibble::tibble(
+  category = category_order_pub,
+  observed_in_cat_clr_long = category_order_pub %in% observed_categories
+)
+
+log_table(
+  category_check_pub,
+  "09P_verificacion_categorias_publication",
+  n = 10
+)
+
+safe_write_tsv(
+  category_check_pub,
+  file.path(dir_qc, "09P_verificacion_categorias_publication.tsv"),
+  reason = "Confirmar que las 5 categorías de publicación existen en cat_clr_long."
+)
+
+if (length(missing_categories) > 0) {
+  log_msg("ERROR: Faltan categorías necesarias para la figura de publicación.")
+  log_msg("Categorías faltantes: ", paste(missing_categories, collapse = ", "))
+  stop("No se puede generar la figura de publicación porque faltan categorías.")
+}
+
+log_msg("Verificación correcta: las 5 categorías de publicación están presentes.")
+
+# ------------------------------------------------------------
+# 9P.4 Preparar tabla de graficación
+# ------------------------------------------------------------
+
+cat_clr_long_pub <- cat_clr_long %>%
+  dplyr::filter(category %in% category_order_pub) %>%
+  dplyr::mutate(
+    category = factor(category, levels = category_order_pub),
+    category_label = factor(
+      category_labels_en[as.character(category)],
+      levels = unname(category_labels_en[category_order_pub])
+    ),
+    Desierto = factor(Desierto, levels = c("CC", "VG"))
+  )
+
+log_table(
+  cat_clr_long_pub,
+  "09P_tabla_graficacion_violin_publication",
+  n = 20
+)
+
+safe_write_tsv(
+  cat_clr_long_pub,
+  file.path(dir_tables, "09P_tabla_graficacion_violin_publication.tsv"),
+  reason = "Guardar la tabla exacta usada para la figura de publicación del violin plot con las 5 categorías y el orden solicitado."
+)
+
+# ------------------------------------------------------------
+# 9P.5 Preparar tabla de anotaciones estadísticas
+# ------------------------------------------------------------
+
+category_stats_pub <- category_diff %>%
+  dplyr::filter(category %in% category_order_pub) %>%
+  dplyr::mutate(
+    category = factor(category, levels = category_order_pub),
+    category_label = factor(
+      category_labels_en[as.character(category)],
+      levels = unname(category_labels_en[category_order_pub])
+    ),
+    significance = dplyr::case_when(
+      p_adj < 0.001 ~ "***",
+      p_adj < 0.01  ~ "**",
+      p_adj < 0.05  ~ "*",
+      TRUE ~ "ns"
+    ),
+    q_label = paste0("q = ", signif(p_adj, 3)),
+    stat_label = ifelse(
+      significance == "ns",
+      q_label,
+      paste0(significance, "\n", q_label)
+    )
+  ) %>%
+  dplyr::arrange(category)
+
+# Posición vertical para las etiquetas estadísticas
+y_positions <- cat_clr_long_pub %>%
+  dplyr::group_by(category, category_label) %>%
+  dplyr::summarise(
+    y_max = max(CLR, na.rm = TRUE),
+    y_min = min(CLR, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    y_pos = y_max + 0.12 * (y_max - y_min + 0.5)
+  )
+
+category_stats_pub <- category_stats_pub %>%
+  dplyr::left_join(
+    y_positions,
+    by = c("category", "category_label")
+  )
+
+log_table(
+  category_stats_pub,
+  "09P_category_stats_publication",
+  n = 20
+)
+
+safe_write_tsv(
+  category_stats_pub,
+  file.path(dir_tables, "09P_category_stats_publication.tsv"),
+  reason = "Guardar la tabla de estadísticos usados para anotar la figura de publicación."
+)
+
+# ------------------------------------------------------------
+# 9P.6 Generar figura de publicación
+# ------------------------------------------------------------
+
+p_violin_pub <- ggplot(
+  cat_clr_long_pub,
+  aes(x = category_label, y = CLR, fill = Desierto)
+) +
+  geom_violin(
+    trim = FALSE,
+    alpha = 0.55,
+    position = position_dodge(width = 0.8),
+    color = "gray30",
+    linewidth = 0.35
+  ) +
+  geom_point(
+    aes(color = Desierto),
+    position = position_jitterdodge(
+      jitter.width = 0.12,
+      dodge.width = 0.8
+    ),
+    size = 1.5,
+    alpha = 0.75,
+    show.legend = FALSE
+  ) +
+  geom_text(
+    data = category_stats_pub,
+    aes(
+      x = category_label,
+      y = y_pos,
+      label = stat_label
+    ),
+    inherit.aes = FALSE,
+    size = 3.2,
+    lineheight = 0.9
+  ) +
+  scale_fill_manual(
+    values = c("CC" = "#E9A4A0", "VG" = "mediumaquamarine"),
+    labels = desert_labels_en,
+    name = "Desert"
+  ) +
+  scale_color_manual(
+    values = c("CC" = "#E9A4A0", "VG" = "mediumaquamarine")
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_bw(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 30, hjust = 1),
+    axis.title = element_text(size = 12),
+    plot.title = element_text(face = "bold", size = 13),
+    plot.subtitle = element_text(size = 10),
+    plot.caption = element_text(size = 8.5, hjust = 0),
+    legend.position = "right",
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    plot.margin = margin(10, 20, 20, 10)
+  ) +
+  labs(
+    title = "CLR-transformed functional category abundance by desert",
+    subtitle = "Each point represents one metagenomic sample (n = 9 per desert).",
+    x = "Functional category",
+    y = "CLR-transformed abundance",
+    caption = paste(
+      "Statistics: two-sided Wilcoxon rank-sum test comparing deserts within each category.",
+      "P-values were adjusted using the Benjamini-Hochberg false discovery rate correction.",
+      "Asterisks indicate FDR-significant differences (* q < 0.05, ** q < 0.01, *** q < 0.001);",
+      "'ns' indicates not significant.",
+      sep = " "
+    )
+  )
+
+print(p_violin_pub)
+
+log_msg("Figura de publicación generada correctamente.")
+
+# ------------------------------------------------------------
+# 9P.7 Guardar figura
+# ------------------------------------------------------------
+
+safe_ggsave(
+  filename = "Figure_01_violin_category_CLR_publication.png",
+  plot = p_violin_pub,
+  width = 9.5,
+  height = 6.8,
+  dpi = 300,
+  reason = "Guardar versión PNG de publicación del violin plot en inglés con las 5 categorías en el orden solicitado."
+)
+
+safe_ggsave(
+  filename = "Figure_01_violin_category_CLR_publication.pdf",
+  plot = p_violin_pub,
+  width = 9.5,
+  height = 6.8,
+  reason = "Guardar versión PDF de publicación del violin plot en inglés con las 5 categorías en el orden solicitado."
+)
+
+# ------------------------------------------------------------
+# 9P.8 Guardar objeto R
+# ------------------------------------------------------------
+
+saveRDS(
+  p_violin_pub,
+  file.path(dir_objects, "09P_p_violin_publication.rds")
+)
+
+log_msg("Archivos guardados:")
+log_msg("- ", file.path(dir_figures, "Figure_01_violin_category_CLR_publication.png"))
+log_msg("- ", file.path(dir_figures, "Figure_01_violin_category_CLR_publication.pdf"))
+log_msg("- ", file.path(dir_tables, "09P_category_stats_publication.tsv"))
+log_msg("- 09P_p_violin_publication.rds")
+
+log_msg("Bloque 9P completado correctamente.")
+```
+
+```{r bloque_9P_violin_publication, message=TRUE, warning=TRUE}
+# ============================================================
+# BLOQUE 9P. VIOLIN PLOT DE PUBLICACIÓN (ENGLISH + STATS)
+# ============================================================
+
+log_section("BLOQUE 9P. Publication-ready violin plot")
+
+log_msg("Razón del bloque:")
+log_msg("Generar una versión lista para publicación del violin plot por categoría.")
+log_msg("No se modifican los valores del análisis; solo se ajustan etiquetas, formato, orden de categorías y anotaciones estadísticas.")
+log_msg("La figura se genera en inglés e incluye la información estadística necesaria para interpretación.")
+
+# ------------------------------------------------------------
+# 9P.1 Cargar objetos necesarios
+# ------------------------------------------------------------
+
+cat_clr_long <- readRDS(file.path(dir_objects, "07_cat_clr_long.rds"))
+category_diff <- readRDS(file.path(dir_objects, "08_category_diff.rds"))
+
+log_msg("Objetos cargados:")
+log_msg("- 07_cat_clr_long.rds")
+log_msg("- 08_category_diff.rds")
+
+# ------------------------------------------------------------
+# 9P.2 Definir categorías que aparecerán en la figura y su orden
+# ------------------------------------------------------------
+
+category_order_pub <- c(
+  "Glucosa_central",
+  "Glucosa_central;UV_repair",
+  "UV_repair",
+  "Nitrogen",
+  "Photosynthesis"
+)
+
+log_msg("Categorías incluidas en esta figura de publicación:")
+log_msg(paste(category_order_pub, collapse = " | "))
+
+log_msg("La figura incluye las 5 categorías analíticas del protocolo original.")
+log_msg("El orden de visualización fue definido para publicación: central glucose metabolism, combined glucose+UV, UV repair, nitrogen metabolism and photosynthesis.")
+
+category_labels_en <- c(
+  "Glucosa_central" = "Central glucose\nmetabolism",
+  "Glucosa_central;UV_repair" = "Central glucose metabolism\n+ UV repair",
+  "UV_repair" = "UV repair",
+  "Nitrogen" = "Nitrogen\nmetabolism",
+  "Photosynthesis" = "Photosynthesis"
+)
+
+desert_labels_en <- c(
+  "CC" = "Cuatro Ciénegas (CC)",
+  "VG" = "Valle de Guadalupe (VG)"
+)
+
+# ------------------------------------------------------------
+# 9P.3 Verificar que las categorías existan
+# ------------------------------------------------------------
+
+observed_categories <- sort(unique(as.character(cat_clr_long$category)))
+missing_categories <- setdiff(category_order_pub, observed_categories)
+
+category_check_pub <- tibble::tibble(
+  category = category_order_pub,
+  observed_in_cat_clr_long = category_order_pub %in% observed_categories
+)
+
+log_table(
+  category_check_pub,
+  "09P_verificacion_categorias_publication",
+  n = 10
+)
+
+safe_write_tsv(
+  category_check_pub,
+  file.path(dir_qc, "09P_verificacion_categorias_publication.tsv"),
+  reason = "Confirmar que las 5 categorías de publicación existen en cat_clr_long."
+)
+
+if (length(missing_categories) > 0) {
+  log_msg("ERROR: Faltan categorías necesarias para la figura de publicación.")
+  log_msg("Categorías faltantes: ", paste(missing_categories, collapse = ", "))
+  stop("No se puede generar la figura de publicación porque faltan categorías.")
+}
+
+log_msg("Verificación correcta: las 5 categorías de publicación están presentes.")
+
+# ------------------------------------------------------------
+# 9P.4 Preparar tabla de graficación
+# ------------------------------------------------------------
+
+cat_clr_long_pub <- cat_clr_long %>%
+  dplyr::filter(category %in% category_order_pub) %>%
+  dplyr::mutate(
+    category = factor(category, levels = category_order_pub),
+    category_label = factor(
+      category_labels_en[as.character(category)],
+      levels = unname(category_labels_en[category_order_pub])
+    ),
+    Desierto = factor(Desierto, levels = c("CC", "VG"))
+  )
+
+log_table(
+  cat_clr_long_pub,
+  "09P_tabla_graficacion_violin_publication",
+  n = 20
+)
+
+safe_write_tsv(
+  cat_clr_long_pub,
+  file.path(dir_tables, "09P_tabla_graficacion_violin_publication.tsv"),
+  reason = "Guardar la tabla exacta usada para la figura de publicación del violin plot con las 5 categorías y el orden solicitado."
+)
+
+# ------------------------------------------------------------
+# 9P.5 Preparar tabla de anotaciones estadísticas
+# ------------------------------------------------------------
+
+category_stats_pub <- category_diff %>%
+  dplyr::filter(category %in% category_order_pub) %>%
+  dplyr::mutate(
+    category = factor(category, levels = category_order_pub),
+    category_label = factor(
+      category_labels_en[as.character(category)],
+      levels = unname(category_labels_en[category_order_pub])
+    ),
+    significance = dplyr::case_when(
+      p_adj < 0.001 ~ "***",
+      p_adj < 0.01  ~ "**",
+      p_adj < 0.05  ~ "*",
+      TRUE ~ ""
+    ),
+    stat_label = significance
+  ) %>%
+  dplyr::arrange(category)
+
+# Posición vertical para las etiquetas estadísticas
+y_positions <- cat_clr_long_pub %>%
+  dplyr::group_by(category, category_label) %>%
+  dplyr::summarise(
+    y_max = max(CLR, na.rm = TRUE),
+    y_min = min(CLR, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(
+    y_pos = y_max + 0.12 * (y_max - y_min + 0.5)
+  )
+
+category_stats_pub <- category_stats_pub %>%
+  dplyr::left_join(
+    y_positions,
+    by = c("category", "category_label")
+  )
+
+# Tabla completa con estadísticos, pero solo se grafican los asteriscos
+category_stats_pub_plot <- category_stats_pub %>%
+  dplyr::filter(stat_label != "")
+
+log_table(
+  category_stats_pub,
+  "09P_category_stats_publication",
+  n = 20
+)
+
+safe_write_tsv(
+  category_stats_pub,
+  file.path(dir_tables, "09P_category_stats_publication.tsv"),
+  reason = "Guardar la tabla de estadísticos completa. Los valores q quedan documentados en tabla, pero no se muestran en la figura."
+)
+
+safe_write_tsv(
+  category_stats_pub_plot,
+  file.path(dir_tables, "09P_category_stats_publication_plot_only.tsv"),
+  reason = "Guardar únicamente las categorías con asteriscos que se mostrarán sobre los violines."
+)
+# ------------------------------------------------------------
+# 9P.6 Generar figura de publicación
+# ------------------------------------------------------------
+
+p_violin_pub <- ggplot(
+  cat_clr_long_pub,
+  aes(x = category_label, y = CLR, fill = Desierto)
+) +
+  geom_violin(
+    trim = FALSE,
+    alpha = 0.55,
+    position = position_dodge(width = 0.8),
+    color = "gray30",
+    linewidth = 0.35
+  ) +
+  geom_point(
+    aes(color = Desierto),
+    position = position_jitterdodge(
+      jitter.width = 0.12,
+      dodge.width = 0.8
+    ),
+    size = 1.5,
+    alpha = 0.75,
+    show.legend = FALSE
+  ) +
+  geom_text(
+    data = category_stats_pub_plot,
+    aes(
+      x = category_label,
+      y = y_pos,
+      label = stat_label
+    ),
+    inherit.aes = FALSE,
+    size = 5,
+    fontface = "bold"
+  ) +
+  scale_fill_manual(
+    values = c("CC" = "#E9A4A0", "VG" = "mediumaquamarine"),
+    labels = desert_labels_en,
+    name = "Desert"
+  ) +
+  scale_color_manual(
+    values = c("CC" = "#E9A4A0", "VG" = "mediumaquamarine")
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_bw(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 30, hjust = 1),
+    axis.title = element_text(size = 12),
+    plot.title = element_blank(),
+    plot.subtitle = element_blank(),
+    plot.caption = element_text(size = 8.5, hjust = 0),
+    legend.position = "right",
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor = element_blank(),
+    plot.margin = margin(10, 20, 20, 10)
+  ) +
+  labs(
+    title = NULL,
+    subtitle = NULL,
+    x = "Functional category",
+    y = "CLR-transformed abundance",
+    caption = paste(
+      "Statistics: two-sided Wilcoxon rank-sum test comparing deserts within each category.",
+      "P-values were adjusted using the Benjamini-Hochberg false discovery rate correction.",
+      "Asterisks indicate FDR-significant differences: * q < 0.05, ** q < 0.01, *** q < 0.001.",
+      sep = " "
+    )
+  )
+
+print(p_violin_pub)
+
+log_msg("Figura de publicación generada correctamente. Solo se muestran asteriscos de significancia; los valores q quedan en la tabla 09P_category_stats_publication.tsv.")
+# ------------------------------------------------------------
+# 9P.7 Guardar figura
+# ------------------------------------------------------------
+
+safe_ggsave(
+  filename = "Figure_01_violin_category_CLR_publication.png",
+  plot = p_violin_pub,
+  width = 9.5,
+  height = 6.8,
+  dpi = 300,
+  reason = "Guardar versión PNG de publicación del violin plot en inglés con las 5 categorías en el orden solicitado."
+)
+
+safe_ggsave(
+  filename = "Figure_01_violin_category_CLR_publication.pdf",
+  plot = p_violin_pub,
+  width = 9.5,
+  height = 6.8,
+  reason = "Guardar versión PDF de publicación del violin plot en inglés con las 5 categorías en el orden solicitado."
+)
+
+# ------------------------------------------------------------
+# 9P.8 Guardar objeto R
+# ------------------------------------------------------------
+
+saveRDS(
+  p_violin_pub,
+  file.path(dir_objects, "09P_p_violin_publication.rds")
+)
+
+log_msg("Archivos guardados:")
+log_msg("- ", file.path(dir_figures, "Figure_01_violin_category_CLR_publication.png"))
+log_msg("- ", file.path(dir_figures, "Figure_01_violin_category_CLR_publication.pdf"))
+log_msg("- ", file.path(dir_tables, "09P_category_stats_publication.tsv"))
+log_msg("- 09P_p_violin_publication.rds")
+
+log_msg("Bloque 9P completado correctamente.")
+```
+```{r bloque_10_volcano_plots_publication, message=TRUE, warning=TRUE}
+# ============================================================
+# BLOQUE 10. VOLCANO PLOTS POR CATEGORÍA FUNCIONAL
+# ============================================================
+
+log_section("BLOQUE 10. Volcano plots por categoría funcional")
+
+log_msg("Razón del bloque:")
+log_msg("Generar volcano plots por categoría funcional usando la tabla diferencial de KOs.")
+log_msg("No se recalculan pruebas estadísticas ni valores; se usa KO_differential_all_categories del Bloque 8.")
+log_msg("Los volcano plots muestran diff_meanCLR en el eje X y -log10(q) en el eje Y.")
+
+# ------------------------------------------------------------
+# 10.1 Cargar tabla diferencial por KO
+# ------------------------------------------------------------
+
+ko_diff_all <- readRDS(
+  file.path(dir_objects, "08_KO_differential_all_categories.rds")
+)
+
+log_msg("Objeto cargado: 08_KO_differential_all_categories.rds")
+log_msg("Dimensiones de ko_diff_all: ", nrow(ko_diff_all), " filas x ", ncol(ko_diff_all), " columnas")
+
+# ------------------------------------------------------------
+# 10.2 Definir orden y etiquetas de categorías
+# ------------------------------------------------------------
+
+category_order_pub <- c(
+  "Glucosa_central",
+  "Glucosa_central;UV_repair",
+  "UV_repair",
+  "Nitrogen",
+  "Photosynthesis"
+)
+
+category_labels_en <- c(
+  "Glucosa_central" = "Central glucose metabolism",
+  "Glucosa_central;UV_repair" = "Central glucose metabolism + UV repair",
+  "UV_repair" = "UV repair",
+  "Nitrogen" = "Nitrogen metabolism",
+  "Photosynthesis" = "Photosynthesis"
+)
+
+# Verificación de categorías
+observed_categories <- sort(unique(as.character(ko_diff_all$category)))
+missing_categories <- setdiff(category_order_pub, observed_categories)
+
+category_check_volcano <- tibble::tibble(
+  category = category_order_pub,
+  observed_in_ko_diff_all = category_order_pub %in% observed_categories
+)
+
+log_table(
+  category_check_volcano,
+  "10_verificacion_categorias_volcano",
+  n = 10
+)
+
+safe_write_tsv(
+  category_check_volcano,
+  file.path(dir_qc, "10_verificacion_categorias_volcano.tsv"),
+  reason = "Confirmar que las categorías esperadas existen en la tabla diferencial por KO."
+)
+
+if (length(missing_categories) > 0) {
+  log_msg("ERROR: Faltan categorías esperadas para los volcano plots.")
+  log_msg("Categorías faltantes: ", paste(missing_categories, collapse = ", "))
+  stop("No se pueden generar volcano plots porque faltan categorías.")
+}
+
+log_msg("Verificación correcta: las 5 categorías están presentes para volcano plots.")
+
+# ------------------------------------------------------------
+# 10.3 Preparar tabla para volcano plots
+# ------------------------------------------------------------
+
+ko_diff_volcano <- ko_diff_all %>%
+  dplyr::filter(category %in% category_order_pub) %>%
+  dplyr::mutate(
+    category = factor(category, levels = category_order_pub),
+    category_label = category_labels_en[as.character(category)],
+    neg_log10_q = -log10(p_adj),
+    direction = dplyr::if_else(
+      diff_meanCLR > 0,
+      "VG > CC",
+      "CC > VG"
+    ),
+    significance = dplyr::case_when(
+      p_adj < 0.05 & diff_meanCLR > 0 ~ "Significant, VG > CC",
+      p_adj < 0.05 & diff_meanCLR < 0 ~ "Significant, CC > VG",
+      TRUE ~ "Not significant"
+    )
+  )
+
+log_table(
+  ko_diff_volcano,
+  "10_tabla_para_volcano_plots",
+  n = 20
+)
+
+safe_write_tsv(
+  ko_diff_volcano,
+  file.path(dir_tables, "10_tabla_para_volcano_plots.tsv"),
+  reason = "Guardar la tabla exacta que alimenta los volcano plots por categoría."
+)
+
+# ------------------------------------------------------------
+# 10.4 Resumen de puntos por categoría
+# ------------------------------------------------------------
+
+volcano_summary <- ko_diff_volcano %>%
+  dplyr::group_by(category, category_label, significance) %>%
+  dplyr::summarise(
+    n_KOs = dplyr::n(),
+    .groups = "drop"
+  ) %>%
+  dplyr::arrange(category, significance)
+
+log_table(
+  volcano_summary,
+  "10_resumen_puntos_volcano",
+  n = 30
+)
+
+safe_write_tsv(
+  volcano_summary,
+  file.path(dir_qc, "10_resumen_puntos_volcano.tsv"),
+  reason = "Registrar cuántos KOs aparecen en cada volcano plot y cuántos son significativos."
+)
+
+# ------------------------------------------------------------
+# 10.5 Generar volcano plots individuales
+# ------------------------------------------------------------
+
+volcano_plots <- list()
+
+for (cat_i in category_order_pub) {
+  
+  df_cat <- ko_diff_volcano %>%
+    dplyr::filter(category == cat_i)
+  
+  cat_label <- category_labels_en[[cat_i]]
+  
+  log_msg("Generando volcano plot para: ", cat_label)
+  log_msg("Número de KOs en esta categoría: ", nrow(df_cat))
+  
+  p_volcano <- ggplot(
+    df_cat,
+    aes(x = diff_meanCLR, y = neg_log10_q)
+  ) +
+    geom_point(
+      aes(color = significance),
+      alpha = 0.75,
+      size = 2
+    ) +
+    geom_vline(
+      xintercept = 0,
+      linetype = "dashed",
+      linewidth = 0.4
+    ) +
+    geom_hline(
+      yintercept = -log10(0.05),
+      linetype = "dotted",
+      linewidth = 0.4
+    ) +
+    scale_color_manual(
+      values = c(
+        "Significant, VG > CC" = "mediumaquamarine",
+        "Significant, CC > VG" = "#E9A4A0",
+        "Not significant" = "gray70"
+      ),
+      breaks = c(
+        "Significant, CC > VG",
+        "Significant, VG > CC",
+        "Not significant"
+      ),
+      name = "Differential signal"
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      plot.title = element_blank(),
+      plot.subtitle = element_text(size = 10),
+      plot.caption = element_text(size = 8.5, hjust = 0),
+      legend.position = "right",
+      panel.grid.minor = element_blank()
+    ) +
+    labs(
+      title = NULL,
+      subtitle = cat_label,
+      x = expression(Delta~"mean CLR abundance (VG - CC)"),
+      y = expression(-log[10]~"(FDR-adjusted q-value)"),
+      caption = paste(
+        "Each point represents one KO assigned to this functional category.",
+        "",
+        "The horizontal dotted line indicates q = 0.05.",
+        "Positive values indicate enrichment in Valle de Guadalupe; negative values indicate enrichment in Cuatro Ciénegas.",
+        sep = " "
+      )
+    )
+  
+  print(p_volcano)
+  
+  volcano_plots[[cat_i]] <- p_volcano
+  
+  file_stub <- paste0(
+    "Figure_volcano_KO_",
+    gsub("[^A-Za-z0-9]+", "_", cat_i)
+  )
+  
+  safe_ggsave(
+    filename = paste0(file_stub, "_publication.png"),
+    plot = p_volcano,
+    width = 7.5,
+    height = 5.5,
+    dpi = 300,
+    reason = paste0("Guardar volcano plot PNG para la categoría: ", cat_label)
+  )
+  
+  safe_ggsave(
+    filename = paste0(file_stub, "_publication.pdf"),
+    plot = p_volcano,
+    width = 7.5,
+    height = 5.5,
+    reason = paste0("Guardar volcano plot PDF para la categoría: ", cat_label)
+  )
+}
+
+# ------------------------------------------------------------
+# 10.6 Guardar lista de objetos ggplot
+# ------------------------------------------------------------
+
+saveRDS(
+  volcano_plots,
+  file.path(dir_objects, "10_volcano_plots_publication.rds")
+)
+
+log_msg("Objeto R guardado:")
+log_msg("- 10_volcano_plots_publication.rds")
+
+log_msg("Bloque 10 completado correctamente.")
+```
+
+```{r bloque_10B_volcano_plots_publication_labels, message=TRUE, warning=TRUE}
+# ============================================================
+# BLOQUE 10B. VOLCANO PLOTS CON ETIQUETAS DE KOs PRINCIPALES
+# ============================================================
+
+log_section("BLOQUE 10B. Volcano plots con etiquetas de KOs principales")
+
+log_msg("Razón del bloque:")
+log_msg("Generar una segunda versión de los volcano plots con etiquetas para los KOs más relevantes.")
+log_msg("No se recalculan valores ni pruebas estadísticas.")
+log_msg("Las etiquetas son una decisión visual de publicación basada en q < 0.05 y magnitud de efecto.")
+
+# ------------------------------------------------------------
+# 10B.1 Cargar librería adicional para etiquetas
+# ------------------------------------------------------------
+
+if (!"ggrepel" %in% rownames(installed.packages())) {
+  log_msg("Paquete faltante detectado: ggrepel")
+  log_msg("Se instalará porque permite colocar etiquetas sin que se encimen.")
+  install.packages("ggrepel")
+}
+
+library(ggrepel)
+
+log_msg("Librería ggrepel cargada correctamente.")
+
+# ------------------------------------------------------------
+# 10B.2 Cargar tabla diferencial por KO
+# ------------------------------------------------------------
+
+ko_diff_all <- readRDS(
+  file.path(dir_objects, "08_KO_differential_all_categories.rds")
+)
+
+log_msg("Objeto cargado: 08_KO_differential_all_categories.rds")
+log_msg("Dimensiones de ko_diff_all: ", nrow(ko_diff_all), " filas x ", ncol(ko_diff_all), " columnas")
+
+# ------------------------------------------------------------
+# 10B.3 Definir orden y etiquetas de categorías
+# ------------------------------------------------------------
+
+category_order_pub <- c(
+  "Glucosa_central",
+  "Glucosa_central;UV_repair",
+  "UV_repair",
+  "Nitrogen",
+  "Photosynthesis"
+)
+
+category_labels_en <- c(
+  "Glucosa_central" = "Central glucose metabolism",
+  "Glucosa_central;UV_repair" = "Central glucose metabolism + UV repair",
+  "UV_repair" = "UV repair",
+  "Nitrogen" = "Nitrogen metabolism",
+  "Photosynthesis" = "Photosynthesis"
+)
+
+# ------------------------------------------------------------
+# 10B.4 Preparar tabla base para volcano
+# ------------------------------------------------------------
+
+ko_diff_volcano <- ko_diff_all %>%
+  dplyr::filter(category %in% category_order_pub) %>%
+  dplyr::mutate(
+    category = factor(category, levels = category_order_pub),
+    category_label = category_labels_en[as.character(category)],
+    neg_log10_q = -log10(p_adj),
+    direction = dplyr::if_else(
+      diff_meanCLR > 0,
+      "VG > CC",
+      "CC > VG"
+    ),
+    significance = dplyr::case_when(
+      p_adj < 0.05 & diff_meanCLR > 0 ~ "Significant, VG > CC",
+      p_adj < 0.05 & diff_meanCLR < 0 ~ "Significant, CC > VG",
+      TRUE ~ "Not significant"
+    ),
+    ko_label = dplyr::if_else(
+      !is.na(ko_name) & ko_name != "",
+      paste0(KO, "\n", stringr::str_trunc(ko_name, width = 45)),
+      KO
+    )
+  )
+
+safe_write_tsv(
+  ko_diff_volcano,
+  file.path(dir_tables, "10B_tabla_base_volcano_labels.tsv"),
+  reason = "Guardar la tabla base usada para volcano plots con etiquetas."
+)
+
+# ------------------------------------------------------------
+# 10B.5 Seleccionar KOs que serán etiquetados
+# ------------------------------------------------------------
+
+top_n_labels <- 10
+
+label_selection <- ko_diff_volcano %>%
+  dplyr::filter(p_adj < 0.05) %>%
+  dplyr::group_by(category) %>%
+  dplyr::arrange(p_adj, dplyr::desc(abs(diff_meanCLR)), .by_group = TRUE) %>%
+  dplyr::slice_head(n = top_n_labels) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(
+    label_reason = paste0(
+      "q < 0.05; selected among top ",
+      top_n_labels,
+      " by lowest q and largest absolute diff_meanCLR"
+    )
+  )
+
+log_table(
+  label_selection,
+  "10B_KOs_etiquetados_volcano",
+  n = 50
+)
+
+safe_write_tsv(
+  label_selection,
+  file.path(dir_tables, "10B_KOs_etiquetados_volcano.tsv"),
+  reason = "Guardar los KOs seleccionados para etiquetarse en la segunda versión de los volcano plots."
+)
+
+label_summary <- label_selection %>%
+  dplyr::count(category, category_label, name = "n_labeled_KOs") %>%
+  dplyr::arrange(category)
+
+log_table(
+  label_summary,
+  "10B_resumen_KOs_etiquetados_por_categoria",
+  n = 20
+)
+
+safe_write_tsv(
+  label_summary,
+  file.path(dir_qc, "10B_resumen_KOs_etiquetados_por_categoria.tsv"),
+  reason = "Registrar cuántos KOs se etiquetan por categoría."
+)
+
+# ------------------------------------------------------------
+# 10B.6 Generar volcano plots individuales con etiquetas
+# ------------------------------------------------------------
+
+volcano_plots_labeled <- list()
+
+for (cat_i in category_order_pub) {
+  
+  df_cat <- ko_diff_volcano %>%
+    dplyr::filter(category == cat_i)
+  
+  df_labels <- label_selection %>%
+    dplyr::filter(category == cat_i)
+  
+  cat_label <- category_labels_en[[cat_i]]
+  
+  log_msg("Generando volcano plot etiquetado para: ", cat_label)
+  log_msg("Número total de KOs en esta categoría: ", nrow(df_cat))
+  log_msg("Número de KOs etiquetados: ", nrow(df_labels))
+  
+  p_volcano_labeled <- ggplot(
+    df_cat,
+    aes(x = diff_meanCLR, y = neg_log10_q)
+  ) +
+    geom_point(
+      aes(color = significance),
+      alpha = 0.75,
+      size = 2
+    ) +
+    geom_vline(
+      xintercept = 0,
+      linetype = "dashed",
+      linewidth = 0.4
+    ) +
+    geom_hline(
+      yintercept = -log10(0.05),
+      linetype = "dotted",
+      linewidth = 0.4
+    ) +
+    ggrepel::geom_text_repel(
+      data = df_labels,
+      aes(label = ko_label),
+      size = 3,
+      max.overlaps = Inf,
+      box.padding = 0.35,
+      point.padding = 0.25,
+      min.segment.length = 0,
+      segment.linewidth = 0.25,
+      show.legend = FALSE
+    ) +
+    scale_color_manual(
+      values = c(
+        "Significant, VG > CC" = "mediumaquamarine",
+        "Significant, CC > VG" = "#E9A4A0",
+        "Not significant" = "gray70"
+      ),
+      breaks = c(
+        "Significant, CC > VG",
+        "Significant, VG > CC",
+        "Not significant"
+      ),
+      name = "Differential signal"
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      plot.title = element_blank(),
+      plot.subtitle = element_text(size = 10),
+      plot.caption = element_text(size = 8.5, hjust = 0),
+      legend.position = "right",
+      panel.grid.minor = element_blank()
+    ) +
+    labs(
+      title = NULL,
+      subtitle = cat_label,
+      x = expression(Delta~"mean CLR abundance (VG - CC)"),
+      y = expression(-log[10]~"(FDR-adjusted q-value)"),
+      caption = paste(
+        "Each point represents one KO assigned to this functional category.",
+        "Labeled KOs correspond to FDR-significant features (q < 0.05), with up to 10 labels per category.",
+        "The vertical dashed line indicates no difference between deserts.",
+        "The horizontal dotted line indicates q = 0.05.",
+        "Positive values indicate enrichment in Valle de Guadalupe; negative values indicate enrichment in Cuatro Ciénegas.",
+        sep = " "
+      )
+    )
+  
+  print(p_volcano_labeled)
+  
+  volcano_plots_labeled[[cat_i]] <- p_volcano_labeled
+  
+  file_stub <- paste0(
+    "Figure_volcano_KO_",
+    gsub("[^A-Za-z0-9]+", "_", cat_i),
+    "_labeled"
+  )
+  
+  safe_ggsave(
+    filename = paste0(file_stub, "_publication.png"),
+    plot = p_volcano_labeled,
+    width = 8.2,
+    height = 5.8,
+    dpi = 300,
+    reason = paste0("Guardar volcano plot etiquetado PNG para la categoría: ", cat_label)
+  )
+  
+  safe_ggsave(
+    filename = paste0(file_stub, "_publication.pdf"),
+    plot = p_volcano_labeled,
+    width = 8.2,
+    height = 5.8,
+    reason = paste0("Guardar volcano plot etiquetado PDF para la categoría: ", cat_label)
+  )
+}
+
+# ------------------------------------------------------------
+# 10B.7 Guardar objetos R
+# ------------------------------------------------------------
+
+saveRDS(
+  volcano_plots_labeled,
+  file.path(dir_objects, "10B_volcano_plots_labeled_publication.rds")
+)
+
+saveRDS(
+  label_selection,
+  file.path(dir_objects, "10B_KOs_etiquetados_volcano.rds")
+)
+
+log_msg("Objetos R guardados:")
+log_msg("- 10B_volcano_plots_labeled_publication.rds")
+log_msg("- 10B_KOs_etiquetados_volcano.rds")
+
+log_msg("Bloque 10B completado correctamente.")
+```
+```{r bloque_10C_tabla_publicacion_KOs_etiquetados, message=TRUE, warning=TRUE}
+# ============================================================
+# BLOQUE 10C. TABLA DE PUBLICACIÓN PARA KOs ETIQUETADOS EN VOLCANO PLOTS
+# ============================================================
+
+log_section("BLOQUE 10C. Tabla de publicación para KOs etiquetados")
+
+log_msg("Razón del bloque:")
+log_msg("Generar una tabla de publicación con los KOs etiquetados en los volcano plots.")
+log_msg("No se recalculan valores; se usa directamente 10B_KOs_etiquetados_volcano.tsv.")
+log_msg("La tabla resume categoría, KO, anotación funcional, dirección de enriquecimiento, q-value y tamaño de efecto.")
+
+# ------------------------------------------------------------
+# 10C.1 Cargar paquetes necesarios
+# ------------------------------------------------------------
+
+packages_needed_10C <- c("gt", "dplyr", "readr", "stringr", "tibble")
+
+packages_missing_10C <- packages_needed_10C[
+  !packages_needed_10C %in% rownames(installed.packages())
+]
+
+if (length(packages_missing_10C) > 0) {
+  log_msg("Paquetes faltantes para tabla de publicación: ", paste(packages_missing_10C, collapse = ", "))
+  install.packages(packages_missing_10C)
+}
+
+invisible(lapply(packages_needed_10C, library, character.only = TRUE))
+
+log_msg("Paquetes para tabla de publicación cargados correctamente.")
+
+# ------------------------------------------------------------
+# 10C.2 Leer tabla de KOs etiquetados
+# ------------------------------------------------------------
+
+labeled_kos_path <- file.path(
+  dir_tables,
+  "10B_KOs_etiquetados_volcano.tsv"
+)
+
+if (!file.exists(labeled_kos_path)) {
+  log_msg("ERROR: No se encontró la tabla 10B_KOs_etiquetados_volcano.tsv.")
+  log_msg("Ruta esperada: ", labeled_kos_path)
+  stop("No se puede construir la tabla de publicación sin 10B_KOs_etiquetados_volcano.tsv.")
+}
+
+labeled_kos <- readr::read_tsv(
+  labeled_kos_path,
+  show_col_types = FALSE
+)
+
+log_table(
+  labeled_kos,
+  "10C_labeled_kos_original",
+  n = 20
+)
+
+# ------------------------------------------------------------
+# 10C.3 Verificar columnas necesarias
+# ------------------------------------------------------------
+
+required_cols_10C <- c(
+  "category",
+  "KO",
+  "ko_name",
+  "diff_meanCLR",
+  "p_adj",
+  "cliffs_delta",
+  "prevalence",
+  "direction"
+)
+
+missing_cols_10C <- setdiff(required_cols_10C, colnames(labeled_kos))
+
+if (length(missing_cols_10C) > 0) {
+  log_msg("ERROR: Faltan columnas necesarias para la tabla de publicación.")
+  log_msg("Columnas faltantes: ", paste(missing_cols_10C, collapse = ", "))
+  stop("No se puede construir la tabla de publicación porque faltan columnas.")
+}
+
+log_msg("Verificación correcta: la tabla contiene todas las columnas necesarias.")
+
+# ------------------------------------------------------------
+# 10C.4 Definir orden y etiquetas en inglés
+# ------------------------------------------------------------
+
+category_order_pub <- c(
+  "Glucosa_central",
+  "Glucosa_central;UV_repair",
+  "UV_repair",
+  "Nitrogen",
+  "Photosynthesis"
+)
+
+category_labels_en <- c(
+  "Glucosa_central" = "Central glucose metabolism",
+  "Glucosa_central;UV_repair" = "Central glucose metabolism + UV repair",
+  "UV_repair" = "UV repair",
+  "Nitrogen" = "Nitrogen metabolism",
+  "Photosynthesis" = "Photosynthesis"
+)
+
+# ------------------------------------------------------------
+# 10C.5 Crear tabla cruda ordenada para trazabilidad
+# ------------------------------------------------------------
+
+labeled_kos_publication_raw <- labeled_kos %>%
+  dplyr::filter(category %in% category_order_pub) %>%
+  dplyr::mutate(
+    category = factor(category, levels = category_order_pub),
+    Functional_category = category_labels_en[as.character(category)],
+    Enriched_desert = dplyr::case_when(
+      direction == "VG > CC" | direction == "VG>CC" ~ "Valle de Guadalupe (VG)",
+      direction == "CC > VG" | direction == "CC>VG" ~ "Cuatro Ciénegas (CC)",
+      diff_meanCLR > 0 ~ "Valle de Guadalupe (VG)",
+      diff_meanCLR < 0 ~ "Cuatro Ciénegas (CC)",
+      TRUE ~ "No direction"
+    )
+  ) %>%
+  dplyr::arrange(category, p_adj, dplyr::desc(abs(diff_meanCLR)))
+
+safe_write_tsv(
+  labeled_kos_publication_raw,
+  file.path(dir_tables, "10C_labeled_KOs_publication_raw.tsv"),
+  reason = "Guardar tabla cruda de KOs etiquetados, ordenada y con etiquetas en inglés, sin redondear valores."
+)
+
+# ------------------------------------------------------------
+# 10C.6 Crear tabla formateada para figura/publicación
+# ------------------------------------------------------------
+
+labeled_kos_publication_display <- labeled_kos_publication_raw %>%
+  dplyr::transmute(
+    `Functional category` = Functional_category,
+    KO = KO,
+    `Functional annotation` = ko_name,
+    `Enriched desert` = Enriched_desert,
+    `Δ mean CLR\n(VG - CC)` = round(diff_meanCLR, 3),
+    `FDR q-value` = signif(p_adj, 3),
+    `Cliff's δ` = round(cliffs_delta, 3),
+    Prevalence = round(prevalence, 2)
+  )
+
+log_table(
+  labeled_kos_publication_display,
+  "10C_labeled_kos_publication_display",
+  n = 30
+)
+
+safe_write_tsv(
+  labeled_kos_publication_display,
+  file.path(dir_tables, "10C_labeled_KOs_publication_display.tsv"),
+  reason = "Guardar tabla formateada para publicación con valores redondeados solo para visualización."
+)
+
+# ------------------------------------------------------------
+# 10C.7 Generar tabla gt para publicación
+# ------------------------------------------------------------
+
+gt_labeled_kos <- labeled_kos_publication_display %>%
+  gt::gt(groupname_col = "Functional category") %>%
+  gt::tab_header(
+    title = gt::md("**Key labeled KOs from volcano plots**"),
+    subtitle = gt::md("Differentially enriched KOs selected for volcano plot labels")
+  ) %>%
+  gt::cols_label(
+    KO = "KO",
+    `Functional annotation` = "Functional annotation",
+    `Enriched desert` = "Enriched desert",
+    `Δ mean CLR\n(VG - CC)` = gt::md("Δ mean CLR<br>(VG − CC)"),
+    `FDR q-value` = "FDR q-value",
+    `Cliff's δ` = gt::md("Cliff's δ"),
+    Prevalence = "Prevalence"
+  ) %>%
+  gt::tab_style(
+    style = gt::cell_text(weight = "bold"),
+    locations = gt::cells_row_groups()
+  ) %>%
+  gt::tab_options(
+    table.font.size = gt::px(11),
+    heading.title.font.size = gt::px(15),
+    heading.subtitle.font.size = gt::px(12),
+    row_group.font.weight = "bold",
+    table.width = gt::pct(100),
+    data_row.padding = gt::px(3)
+  ) %>%
+  gt::cols_align(
+    align = "center",
+    columns = c(KO, `Enriched desert`, `Δ mean CLR\n(VG - CC)`, `FDR q-value`, `Cliff's δ`, Prevalence)
+  ) %>%
+  gt::cols_align(
+    align = "left",
+    columns = c(`Functional annotation`)
+  ) %>%
+  gt::tab_source_note(
+    source_note = gt::md(
+      "Statistics: two-sided Wilcoxon rank-sum test comparing deserts; p-values were adjusted using the Benjamini-Hochberg FDR correction. Δ mean CLR = mean CLR abundance in VG − mean CLR abundance in CC. Cliff's δ indicates effect size."
+    )
+  )
+
+gt_labeled_kos
+
+log_msg("Tabla gt de publicación generada correctamente.")
+
+# ------------------------------------------------------------
+# 10C.8 Guardar tabla en HTML y PNG
+# ------------------------------------------------------------
+
+table_html_path <- file.path(
+  dir_figures,
+  "Table_01_labeled_KOs_from_volcano_plots_publication.html"
+)
+
+gt::gtsave(
+  data = gt_labeled_kos,
+  filename = table_html_path
+)
+
+log_msg("Tabla HTML guardada:")
+log_msg(table_html_path)
+
+table_png_path <- file.path(
+  dir_figures,
+  "Table_01_labeled_KOs_from_volcano_plots_publication.png"
+)
+
+tryCatch({
+  gt::gtsave(
+    data = gt_labeled_kos,
+    filename = table_png_path
+  )
+  log_msg("Tabla PNG guardada:")
+  log_msg(table_png_path)
+}, error = function(e) {
+  log_msg("No se pudo guardar la tabla como PNG automáticamente.")
+  log_msg("Detalle: ", e$message)
+  log_msg("La tabla sí quedó guardada como HTML. Puedes abrir el HTML y exportarlo/capturarlo si es necesario.")
+})
+
+# ------------------------------------------------------------
+# 10C.9 Guardar objeto R
+# ------------------------------------------------------------
+
+saveRDS(
+  gt_labeled_kos,
+  file.path(dir_objects, "10C_gt_labeled_KOs_publication.rds")
+)
+
+saveRDS(
+  labeled_kos_publication_raw,
+  file.path(dir_objects, "10C_labeled_KOs_publication_raw.rds")
+)
+
+saveRDS(
+  labeled_kos_publication_display,
+  file.path(dir_objects, "10C_labeled_KOs_publication_display.rds")
+)
+
+log_msg("Objetos R guardados:")
+log_msg("- 10C_gt_labeled_KOs_publication.rds")
+log_msg("- 10C_labeled_KOs_publication_raw.rds")
+log_msg("- 10C_labeled_KOs_publication_display.rds")
+
+log_msg("Bloque 10C completado correctamente.")
+```
+
+```{r bloque_11_lollipop_plots_publication, message=TRUE, warning=TRUE}
+# ============================================================
+# BLOQUE 11. LOLLIPOP PLOTS DE KOs POR TAMAÑO DE EFECTO
+# ============================================================
+
+log_section("BLOQUE 11. Lollipop plots de KOs por tamaño de efecto")
+
+log_msg("Razón del bloque:")
+log_msg("Generar lollipop plots para visualizar los KOs con mayor tamaño de efecto.")
+log_msg("No se recalculan valores estadísticos; se usa KO_differential_all_categories del Bloque 8.")
+log_msg("El criterio original se conserva: KOs con q <= 0.1 y ranking por abs(Cliff's delta).")
+
+# ------------------------------------------------------------
+# 11.1 Cargar tabla diferencial por KO
+# ------------------------------------------------------------
+
+ko_diff_all <- readRDS(
+  file.path(dir_objects, "08_KO_differential_all_categories.rds")
+)
+
+log_msg("Objeto cargado: 08_KO_differential_all_categories.rds")
+log_msg("Dimensiones de ko_diff_all: ", nrow(ko_diff_all), " filas x ", ncol(ko_diff_all), " columnas")
+
+# ------------------------------------------------------------
+# 11.2 Definir orden y etiquetas de categorías
+# ------------------------------------------------------------
+
+category_order_pub <- c(
+  "Glucosa_central",
+  "Glucosa_central;UV_repair",
+  "UV_repair",
+  "Nitrogen",
+  "Photosynthesis"
+)
+
+category_labels_en <- c(
+  "Glucosa_central" = "Central glucose metabolism",
+  "Glucosa_central;UV_repair" = "Central glucose metabolism + UV repair",
+  "UV_repair" = "UV repair",
+  "Nitrogen" = "Nitrogen metabolism",
+  "Photosynthesis" = "Photosynthesis"
+)
+
+# ------------------------------------------------------------
+# 11.3 Preparar tabla de KOs significativos para lollipop
+# ------------------------------------------------------------
+
+alpha_lollipop <- 0.1
+top_n_effect <- 10
+
+ko_lollipop_base <- ko_diff_all %>%
+  dplyr::filter(
+    category %in% category_order_pub,
+    !is.na(cliffs_delta),
+    p_adj <= alpha_lollipop
+  ) %>%
+  dplyr::mutate(
+    category = factor(category, levels = category_order_pub),
+    category_label = category_labels_en[as.character(category)],
+    direction = dplyr::if_else(diff_meanCLR > 0, "VG > CC", "CC > VG"),
+    enriched_desert = dplyr::if_else(
+      diff_meanCLR > 0,
+      "Valle de Guadalupe (VG)",
+      "Cuatro Ciénegas (CC)"
+    ),
+    base_label = dplyr::if_else(
+      !is.na(ko_name) & ko_name != "",
+      ko_name,
+      KO
+    ),
+    label_short = stringr::str_trunc(base_label, width = 55),
+    label_plot = paste0(KO, " | ", label_short)
+  )
+
+log_table(
+  ko_lollipop_base,
+  "11_KOs_base_lollipop_q_0_10",
+  n = 30
+)
+
+safe_write_tsv(
+  ko_lollipop_base,
+  file.path(dir_tables, "11_KOs_base_lollipop_q_0_10.tsv"),
+  reason = "Guardar KOs con q <= 0.1 usados como base para los lollipop plots."
+)
+
+if (nrow(ko_lollipop_base) == 0) {
+  log_msg("ERROR: No hay KOs con q <= 0.1 para generar lollipop plots.")
+  stop("No se pueden generar lollipop plots sin KOs significativos bajo el criterio original.")
+}
+
+# ------------------------------------------------------------
+# 11.4 Seleccionar top KOs por categoría
+# ------------------------------------------------------------
+
+ko_lollipop_by_category <- ko_lollipop_base %>%
+  dplyr::group_by(category, category_label) %>%
+  dplyr::slice_max(
+    order_by = abs(cliffs_delta),
+    n = top_n_effect,
+    with_ties = FALSE
+  ) %>%
+  dplyr::ungroup() %>%
+  dplyr::arrange(category, dplyr::desc(abs(cliffs_delta)))
+
+log_table(
+  ko_lollipop_by_category,
+  "11_top_KOs_lollipop_por_categoria",
+  n = 50
+)
+
+safe_write_tsv(
+  ko_lollipop_by_category,
+  file.path(dir_tables, "11_top_KOs_lollipop_por_categoria.tsv"),
+  reason = "Guardar los top KOs por categoría seleccionados por mayor abs(Cliff's delta)."
+)
+
+lollipop_summary <- ko_lollipop_by_category %>%
+  dplyr::count(category, category_label, direction, name = "n_KOs") %>%
+  dplyr::arrange(category, direction)
+
+log_table(
+  lollipop_summary,
+  "11_resumen_top_KOs_lollipop_por_categoria",
+  n = 30
+)
+
+safe_write_tsv(
+  lollipop_summary,
+  file.path(dir_qc, "11_resumen_top_KOs_lollipop_por_categoria.tsv"),
+  reason = "Registrar cuántos KOs se grafican por categoría y dirección."
+)
+
+# ------------------------------------------------------------
+# 11.5 Lollipop individual por categoría
+# ------------------------------------------------------------
+
+lollipop_plots_individual <- list()
+
+for (cat_i in category_order_pub) {
+  
+  df_cat <- ko_lollipop_by_category %>%
+    dplyr::filter(category == cat_i) %>%
+    dplyr::mutate(
+      label_plot = forcats::fct_reorder(label_plot, cliffs_delta)
+    )
+  
+  cat_label <- category_labels_en[[cat_i]]
+  
+  if (nrow(df_cat) == 0) {
+    log_msg("No hay KOs significativos para lollipop en categoría: ", cat_label)
+    next
+  }
+  
+  log_msg("Generando lollipop individual para: ", cat_label)
+  log_msg("Número de KOs graficados: ", nrow(df_cat))
+  
+  p_lollipop_cat <- ggplot(
+    df_cat,
+    aes(x = label_plot, y = cliffs_delta, color = direction)
+  ) +
+    geom_hline(
+      yintercept = 0,
+      linetype = "dashed",
+      linewidth = 0.4
+    ) +
+    geom_segment(
+      aes(xend = label_plot, y = 0, yend = cliffs_delta),
+      linewidth = 0.8
+    ) +
+    geom_point(size = 3) +
+    coord_flip() +
+    scale_color_manual(
+      values = c(
+        "VG > CC" = "mediumaquamarine",
+        "CC > VG" = "#E9A4A0"
+      ),
+      name = "Enriched desert"
+    ) +
+    theme_bw(base_size = 12) +
+    theme(
+      plot.title = element_blank(),
+      plot.subtitle = element_text(size = 10),
+      plot.caption = element_text(size = 8.5, hjust = 0),
+      legend.position = "right",
+      panel.grid.major.y = element_blank(),
+      panel.grid.minor = element_blank()
+    ) +
+    labs(
+      title = NULL,
+      subtitle = cat_label,
+      x = "KO functional annotation",
+      y = "Cliff's delta",
+      caption = paste(
+        "KOs shown have FDR-adjusted q <= 0.1.",
+        "KOs were ranked by absolute Cliff's delta within each category.",
+        "Positive values indicate enrichment in Valle de Guadalupe; negative values indicate enrichment in Cuatro Ciénegas.",
+        sep = " "
+      )
+    )
+  
+  print(p_lollipop_cat)
+  
+  lollipop_plots_individual[[cat_i]] <- p_lollipop_cat
+  
+  file_stub <- paste0(
+    "Figure_lollipop_KO_",
+    gsub("[^A-Za-z0-9]+", "_", cat_i),
+    "_publication"
+  )
+  
+  safe_ggsave(
+    filename = paste0(file_stub, ".png"),
+    plot = p_lollipop_cat,
+    width = 8.8,
+    height = 5.8,
+    dpi = 300,
+    reason = paste0("Guardar lollipop plot individual PNG para: ", cat_label)
+  )
+  
+  safe_ggsave(
+    filename = paste0(file_stub, ".pdf"),
+    plot = p_lollipop_cat,
+    width = 8.8,
+    height = 5.8,
+    reason = paste0("Guardar lollipop plot individual PDF para: ", cat_label)
+  )
+}
+
+# ------------------------------------------------------------
+# 11.6 Lollipop combinado facetado por categoría
+# ------------------------------------------------------------
+
+ko_lollipop_facet <- ko_lollipop_by_category %>%
+  dplyr::mutate(
+    category_label = factor(
+      category_label,
+      levels = unname(category_labels_en[category_order_pub])
+    ),
+    label_facet = paste0(KO, " | ", stringr::str_trunc(base_label, width = 45))
+  ) %>%
+  dplyr::group_by(category_label) %>%
+  dplyr::mutate(
+    label_facet = forcats::fct_reorder(label_facet, cliffs_delta)
+  ) %>%
+  dplyr::ungroup()
+
+p_lollipop_facet <- ggplot(
+  ko_lollipop_facet,
+  aes(x = label_facet, y = cliffs_delta, color = direction)
+) +
+  geom_hline(
+    yintercept = 0,
+    linetype = "dashed",
+    linewidth = 0.4
+  ) +
+  geom_segment(
+    aes(xend = label_facet, y = 0, yend = cliffs_delta),
+    linewidth = 0.7
+  ) +
+  geom_point(size = 2.5) +
+  coord_flip() +
+  facet_wrap(
+    ~ category_label,
+    scales = "free_y",
+    ncol = 1
+  ) +
+  scale_color_manual(
+    values = c(
+      "VG > CC" = "mediumaquamarine",
+      "CC > VG" = "#E9A4A0"
+    ),
+    name = "Enriched desert"
+  ) +
+  theme_bw(base_size = 11) +
+  theme(
+    plot.title = element_blank(),
+    plot.subtitle = element_blank(),
+    plot.caption = element_text(size = 8.5, hjust = 0),
+    strip.text = element_text(face = "bold"),
+    legend.position = "right",
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    title = NULL,
+    subtitle = NULL,
+    x = "KO functional annotation",
+    y = "Cliff's delta",
+    caption = paste(
+      "KOs shown have FDR-adjusted q <= 0.1.",
+      "Up to 10 KOs per category are shown, ranked by absolute Cliff's delta.",
+      "Positive values indicate enrichment in Valle de Guadalupe; negative values indicate enrichment in Cuatro Ciénegas.",
+      sep = " "
+    )
+  )
+
+print(p_lollipop_facet)
+
+safe_ggsave(
+  filename = "Figure_lollipop_KOs_by_category_facet_publication.png",
+  plot = p_lollipop_facet,
+  width = 10,
+  height = 14,
+  dpi = 300,
+  reason = "Guardar lollipop plot facetado por categoría en PNG."
+)
+
+safe_ggsave(
+  filename = "Figure_lollipop_KOs_by_category_facet_publication.pdf",
+  plot = p_lollipop_facet,
+  width = 10,
+  height = 14,
+  reason = "Guardar lollipop plot facetado por categoría en PDF."
+)
+
+# ------------------------------------------------------------
+# 11.7 Lollipop global con top KOs de todas las categorías
+# ------------------------------------------------------------
+
+top_n_global <- 40
+
+ko_lollipop_global <- ko_lollipop_base %>%
+  dplyr::slice_max(
+    order_by = abs(cliffs_delta),
+    n = top_n_global,
+    with_ties = FALSE
+  ) %>%
+  dplyr::mutate(
+    label_global = paste0(
+      category_label,
+      " | ",
+      KO,
+      " | ",
+      stringr::str_trunc(base_label, width = 45)
+    ),
+    label_global = forcats::fct_reorder(label_global, cliffs_delta)
+  )
+
+log_table(
+  ko_lollipop_global,
+  "11_top_KOs_lollipop_global",
+  n = 50
+)
+
+safe_write_tsv(
+  ko_lollipop_global,
+  file.path(dir_tables, "11_top_KOs_lollipop_global.tsv"),
+  reason = "Guardar top global de KOs por abs(Cliff's delta) para lollipop plot global."
+)
+
+p_lollipop_global <- ggplot(
+  ko_lollipop_global,
+  aes(x = label_global, y = cliffs_delta, color = direction)
+) +
+  geom_hline(
+    yintercept = 0,
+    linetype = "dashed",
+    linewidth = 0.4
+  ) +
+  geom_segment(
+    aes(xend = label_global, y = 0, yend = cliffs_delta),
+    linewidth = 0.75
+  ) +
+  geom_point(size = 2.8) +
+  coord_flip() +
+  scale_color_manual(
+    values = c(
+      "VG > CC" = "mediumaquamarine",
+      "CC > VG" = "#E9A4A0"
+    ),
+    name = "Enriched desert"
+  ) +
+  theme_bw(base_size = 11) +
+  theme(
+    plot.title = element_blank(),
+    plot.subtitle = element_blank(),
+    plot.caption = element_text(size = 8.5, hjust = 0),
+    legend.position = "right",
+    panel.grid.major.y = element_blank(),
+    panel.grid.minor = element_blank()
+  ) +
+  labs(
+    title = NULL,
+    subtitle = NULL,
+    x = "Functional category | KO functional annotation",
+    y = "Cliff's delta",
+    caption = paste(
+      "KOs shown have FDR-adjusted q <= 0.1.",
+      "The top 40 KOs were selected globally by absolute Cliff's delta.",
+      "Positive values indicate enrichment in Valle de Guadalupe; negative values indicate enrichment in Cuatro Ciénegas.",
+      sep = " "
+    )
+  )
+
+print(p_lollipop_global)
+
+safe_ggsave(
+  filename = "Figure_lollipop_KOs_global_publication.png",
+  plot = p_lollipop_global,
+  width = 10,
+  height = 10,
+  dpi = 300,
+  reason = "Guardar lollipop plot global en PNG."
+)
+
+safe_ggsave(
+  filename = "Figure_lollipop_KOs_global_publication.pdf",
+  plot = p_lollipop_global,
+  width = 10,
+  height = 10,
+  reason = "Guardar lollipop plot global en PDF."
+)
+
+# ------------------------------------------------------------
+# 11.8 Guardar objetos R
+# ------------------------------------------------------------
+
+saveRDS(
+  ko_lollipop_base,
+  file.path(dir_objects, "11_KOs_base_lollipop_q_0_10.rds")
+)
+
+saveRDS(
+  ko_lollipop_by_category,
+  file.path(dir_objects, "11_top_KOs_lollipop_por_categoria.rds")
+)
+
+saveRDS(
+  lollipop_plots_individual,
+  file.path(dir_objects, "11_lollipop_plots_individual_publication.rds")
+)
+
+saveRDS(
+  p_lollipop_facet,
+  file.path(dir_objects, "11_p_lollipop_facet_publication.rds")
+)
+
+saveRDS(
+  p_lollipop_global,
+  file.path(dir_objects, "11_p_lollipop_global_publication.rds")
+)
+
+log_msg("Objetos R guardados:")
+log_msg("- 11_KOs_base_lollipop_q_0_10.rds")
+log_msg("- 11_top_KOs_lollipop_por_categoria.rds")
+log_msg("- 11_lollipop_plots_individual_publication.rds")
+log_msg("- 11_p_lollipop_facet_publication.rds")
+log_msg("- 11_p_lollipop_global_publication.rds")
+
+log_msg("Figuras principales guardadas en:")
+log_msg("- ", file.path(dir_figures, "Figure_lollipop_KOs_by_category_facet_publication.png"))
+log_msg("- ", file.path(dir_figures, "Figure_lollipop_KOs_global_publication.png"))
+
+log_msg("Bloque 11 completado correctamente.")
+```
+```{r bloque_12_reporte_reproducibilidad, message=TRUE, warning=TRUE}
+# ============================================================
+# BLOQUE 12. SESSION INFORMATION / REPRODUCIBILITY REPORT
+# ============================================================
+
+log_section("BLOQUE 12. Session information / reproducibility report")
+
+log_msg("Razón del bloque:")
+log_msg("Cerrar el protocolo con un reporte de reproducibilidad.")
+log_msg("Este bloque no modifica datos, no recalcula valores y no genera nuevos análisis.")
+log_msg("Solo registra sesión de R, versiones de paquetes, archivos de entrada, objetos generados, tablas y figuras.")
+
+# ------------------------------------------------------------
+# 12.1 Registrar información general del análisis
+# ------------------------------------------------------------
+
+safe_scalar <- function(x, fallback = "Not available") {
+  if (is.null(x) || length(x) == 0 || all(is.na(x))) {
+    return(fallback)
+  }
+  as.character(x[1])
+}
+
+analysis_name_safe <- if (exists("params") && !is.null(params$analysis_name)) {
+  safe_scalar(params$analysis_name)
+} else {
+  safe_scalar(basename(project_dir))
+}
+
+base_dir_safe <- if (exists("base_dir")) {
+  safe_scalar(base_dir)
+} else {
+  "Not available"
+}
+
+project_dir_safe <- if (exists("project_dir")) {
+  safe_scalar(project_dir)
+} else {
+  "Not available"
+}
+
+sys_info <- Sys.info()
+
+analysis_closure_summary <- tibble::tibble(
+  item = c(
+    "Analysis name",
+    "Base directory",
+    "Project directory",
+    "Date and time of closure",
+    "R version",
+    "Operating system",
+    "User",
+    "Reproducibility mode"
+  ),
+  value = c(
+    analysis_name_safe,
+    base_dir_safe,
+    project_dir_safe,
+    as.character(Sys.time()),
+    as.character(getRversion()),
+    paste(
+      safe_scalar(sys_info[["sysname"]]),
+      safe_scalar(sys_info[["release"]])
+    ),
+    safe_scalar(sys_info[["user"]]),
+    "Strict reproducibility: no analytical filters, thresholds, transformations or tests were modified."
+  )
+)
+
+log_table(
+  analysis_closure_summary,
+  "12_analysis_closure_summary",
+  n = 20
+)
+
+safe_write_tsv(
+  analysis_closure_summary,
+  file.path(dir_qc, "12_analysis_closure_summary.tsv"),
+  reason = "Guardar resumen general del cierre del análisis reproducible."
+)
+
+# ------------------------------------------------------------
+# 12.2 Registrar parámetros analíticos congelados
+# ------------------------------------------------------------
+
+final_frozen_parameters <- tibble::tibble(
+  analytical_component = c(
+    "Input abundance table",
+    "Mapping table",
+    "KO annotation table",
+    "Excluded HUMAnN3 rows",
+    "Sample columns",
+    "Groups",
+    "Category assignment",
+    "Category patterns",
+    "Normalization",
+    "Pseudocount",
+    "Transformation",
+    "Category-level test",
+    "KO-level test",
+    "Multiple testing correction",
+    "KO prevalence filter",
+    "Volcano plot threshold",
+    "Lollipop plot threshold",
+    "Effect size"
+  ),
+  value = c(
+    "subset_genefamilies.tsv",
+    "uniref90_ko_reduced_long.tsv",
+    "ko_name_reduced.tsv",
+    "UNMAPPED and UNINTEGRATED",
+    "_Abundance-RPKs",
+    "CC and VG; 9 samples per desert",
+    "Pattern matching on ko_name",
+    "Glucosa_central, Glucosa_central;UV_repair, UV_repair, Nitrogen, Photosynthesis",
+    "Sample-wise proportions",
+    "Half of the minimum positive value per sample",
+    "CLR = log(x) - mean(log(x)) by sample",
+    "Wilcoxon rank-sum test",
+    "Wilcoxon rank-sum test",
+    "Benjamini-Hochberg FDR",
+    "prevalence >= 0.20",
+    "q < 0.05 shown as horizontal reference line",
+    "q <= 0.1",
+    "Cliff's delta"
+  ),
+  status = "FROZEN_DO_NOT_MODIFY"
+)
+
+log_table(
+  final_frozen_parameters,
+  "12_final_frozen_parameters",
+  n = 30
+)
+
+safe_write_tsv(
+  final_frozen_parameters,
+  file.path(dir_qc, "12_final_frozen_parameters.tsv"),
+  reason = "Guardar los parámetros analíticos congelados que aseguran reproducibilidad."
+)
+
+# ------------------------------------------------------------
+# 12.3 Función para inventariar archivos con checksum
+# ------------------------------------------------------------
+
+inventory_files <- function(paths, label) {
+  paths <- unique(paths[file.exists(paths)])
+  
+  if (length(paths) == 0) {
+    return(
+      tibble::tibble(
+        file_group = character(),
+        file_name = character(),
+        path = character(),
+        size_MB = numeric(),
+        modified_time = character(),
+        md5 = character()
+      )
+    )
+  }
+  
+  info <- file.info(paths)
+  
+  tibble::tibble(
+    file_group = label,
+    file_name = basename(paths),
+    path = paths,
+    size_MB = round(info$size / 1024^2, 4),
+    modified_time = as.character(info$mtime),
+    md5 = as.character(tools::md5sum(paths))
+  )
+}
+
+# ------------------------------------------------------------
+# 12.4 Inventario de archivos de entrada
+# ------------------------------------------------------------
+
+input_file_inventory_final <- inventory_files(
+  paths = c(
+    input_genefamilies,
+    input_uniref_ko,
+    input_ko_names
+  ),
+  label = "Input files"
+)
+
+log_table(
+  input_file_inventory_final,
+  "12_input_file_inventory_with_md5",
+  n = 20
+)
+
+safe_write_tsv(
+  input_file_inventory_final,
+  file.path(dir_qc, "12_input_file_inventory_with_md5.tsv"),
+  reason = "Registrar archivos de entrada con tamaño, fecha de modificación y checksum MD5."
+)
+
+# ------------------------------------------------------------
+# 12.5 Inventario de tablas, figuras, objetos y bitácoras generadas
+# ------------------------------------------------------------
+
+generated_tables <- list.files(
+  dir_tables,
+  pattern = "\\.tsv$",
+  full.names = TRUE,
+  recursive = TRUE
+)
+
+generated_figures <- list.files(
+  dir_figures,
+  pattern = "\\.(png|pdf|html)$",
+  full.names = TRUE,
+  recursive = TRUE
+)
+
+generated_objects <- list.files(
+  dir_objects,
+  pattern = "\\.rds$",
+  full.names = TRUE,
+  recursive = TRUE
+)
+
+generated_logs <- list.files(
+  dir_logs,
+  pattern = "\\.txt$",
+  full.names = TRUE,
+  recursive = TRUE
+)
+
+output_file_inventory_final <- dplyr::bind_rows(
+  inventory_files(generated_tables, "Generated tables"),
+  inventory_files(generated_figures, "Generated figures"),
+  inventory_files(generated_objects, "Generated R objects"),
+  inventory_files(generated_logs, "Generated logs")
+)
+
+log_table(
+  output_file_inventory_final,
+  "12_output_file_inventory_with_md5",
+  n = 50
+)
+
+safe_write_tsv(
+  output_file_inventory_final,
+  file.path(dir_qc, "12_output_file_inventory_with_md5.tsv"),
+  reason = "Registrar todos los archivos generados con tamaño, fecha de modificación y checksum MD5."
+)
+
+# ------------------------------------------------------------
+# 12.6 Resumen de archivos generados por tipo
+# ------------------------------------------------------------
+
+output_file_summary <- output_file_inventory_final %>%
+  dplyr::group_by(file_group) %>%
+  dplyr::summarise(
+    n_files = dplyr::n(),
+    total_size_MB = round(sum(size_MB, na.rm = TRUE), 3),
+    .groups = "drop"
+  )
+
+log_table(
+  output_file_summary,
+  "12_output_file_summary",
+  n = 20
+)
+
+safe_write_tsv(
+  output_file_summary,
+  file.path(dir_qc, "12_output_file_summary.tsv"),
+  reason = "Guardar resumen del número de tablas, figuras, objetos y bitácoras generadas."
+)
+
+# ------------------------------------------------------------
+# 12.7 Resumen de objetos clave del análisis
+# ------------------------------------------------------------
+
+object_paths_key <- tibble::tibble(
+  object_name = c(
+    "gf_u",
+    "metadata",
+    "ko_by_sample",
+    "genesets_by_category",
+    "category_abundance",
+    "cat_clr_long",
+    "ko_clr_long",
+    "category_diff",
+    "ko_diff_all",
+    "ko_sig_q_0_10"
+  ),
+  path = file.path(
+    dir_objects,
+    c(
+      "02B_gf_u_subset_genefamilies_limpio.rds",
+      "03_metadata_ordenada_como_sample_cols.rds",
+      "05_KO_by_sample.rds",
+      "06_genesets_by_category.rds",
+      "06_category_abundance.rds",
+      "07_cat_clr_long.rds",
+      "07_ko_clr_long.rds",
+      "08_category_diff.rds",
+      "08_KO_differential_all_categories.rds",
+      "08_KO_significant_q_0_10.rds"
+    )
+  )
+)
+
+object_summary_key <- object_paths_key %>%
+  dplyr::rowwise() %>%
+  dplyr::mutate(
+    exists = file.exists(path),
+    n_rows = ifelse(
+      exists,
+      nrow(readRDS(path)),
+      NA_integer_
+    ),
+    n_cols = ifelse(
+      exists,
+      ncol(readRDS(path)),
+      NA_integer_
+    )
+  ) %>%
+  dplyr::ungroup()
+
+log_table(
+  object_summary_key,
+  "12_key_object_summary",
+  n = 20
+)
+
+safe_write_tsv(
+  object_summary_key,
+  file.path(dir_qc, "12_key_object_summary.tsv"),
+  reason = "Registrar dimensiones de los objetos R principales del protocolo."
+)
+
+# ------------------------------------------------------------
+# 12.8 Versiones de paquetes cargados
+# ------------------------------------------------------------
+
+packages_to_report <- c(
+  "tidyverse",
+  "readr",
+  "dplyr",
+  "tidyr",
+  "stringr",
+  "forcats",
+  "ggplot2",
+  "pheatmap",
+  "scales",
+  "tibble",
+  "ggrepel",
+  "gt"
+)
+
+package_versions <- tibble::tibble(
+  package = packages_to_report,
+  installed = packages_to_report %in% rownames(installed.packages()),
+  version = purrr::map_chr(
+    packages_to_report,
+    ~ if (.x %in% rownames(installed.packages())) {
+      as.character(utils::packageVersion(.x))
+    } else {
+      NA_character_
+    }
+  )
+)
+
+log_table(
+  package_versions,
+  "12_package_versions",
+  n = 30
+)
+
+safe_write_tsv(
+  package_versions,
+  file.path(dir_qc, "12_package_versions.tsv"),
+  reason = "Guardar versiones de paquetes relevantes para reproducibilidad."
+)
+
+# ------------------------------------------------------------
+# 12.9 Guardar sessionInfo completo
+# ------------------------------------------------------------
+
+session_info_txt <- capture.output(sessionInfo())
+
+session_info_path <- file.path(
+  dir_logs,
+  paste0("sessionInfo_", Sys.Date(), ".txt")
+)
+
+writeLines(
+  session_info_txt,
+  con = session_info_path
+)
+
+log_msg("sessionInfo() guardado en:")
+log_msg(session_info_path)
+
+# También guardar una copia en results/qc
+writeLines(
+  session_info_txt,
+  con = file.path(dir_qc, paste0("12_sessionInfo_", Sys.Date(), ".txt"))
+)
+
+# Mostrar sessionInfo en el HTML
+sessionInfo()
+
+# ------------------------------------------------------------
+# 12.10 Mensaje final de cierre
+# ------------------------------------------------------------
+
+log_msg("============================================================")
+log_msg("PROTOCOLO CERRADO CORRECTAMENTE")
+log_msg("Todos los archivos de entrada, salidas, objetos R, figuras, tablas y versiones de paquetes quedaron documentados.")
+log_msg("La bitácora completa quedó guardada en:")
+log_msg(log_file)
+log_msg("============================================================")
+```
+

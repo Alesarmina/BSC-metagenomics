@@ -1,0 +1,1633 @@
+---
+title: "MetaCyc reaction-functional profiling from HUMAnN3 outputs level"
+author: "Gloria Sarmina"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+---
+This R Markdown document performs a publication-oriented functional analysis of HUMAnN3-derived MetaCyc reaction CPM profiles.
+
+The workflow:
+
+1. Creates a new project folder named `MetaCyc`.
+2. Imports the HUMAnN3 MetaCyc reaction CPM table.
+3. Cleans non-informative and stratified entries.
+4. Renames samples according to desert origin.
+5. Builds a sample-by-reaction matrix.
+6. Assigns reactions to ecological-functional categories.
+7. Keeps the final 18 functional categories.
+8. Performs PERMANOVA on Bray-Curtis dissimilarities.
+9. Generates a publication-style heatmap.
+10. Generates violin plots with log10-scaled abundance.
+11. Exports statistical and ecological interpretation tables.
+12. Writes a logbook documenting why each step was done, what data were used, and what outputs were generated.
+
+The input file is expected here:
+
+```text
+/Users/alejandrasarmina/Desktop/HUMAnN3_analisis/rxn-cpm-metacyc.tsv
+```
+
+The output folder will be:
+
+```text
+/Users/alejandrasarmina/Desktop/HUMAnN3_analisis/MetaCyc
+```
+
+---
+
+# 1. Project setup and folder architecture
+
+This first step defines the project structure.
+A copy of the raw input file is stored inside the project folder to preserve traceability.
+
+```{r setup-project, message=FALSE, warning=FALSE}
+# ============================================================
+# 1. Clean R session
+# ============================================================
+
+rm(list = ls())
+cat("\014")
+options(scipen = 999)
+
+# ============================================================
+# 2. Define input and output paths
+# ============================================================
+
+base_dir <- "/Users/alejandrasarmina/Desktop/HUMAnN3_analisis"
+project_dir <- file.path(base_dir, "MetaCyc")
+
+input_file <- file.path(base_dir, "rxn-cpm-metacyc.tsv")
+
+# ============================================================
+# 3. Define folder architecture
+# ============================================================
+
+dir_raw        <- file.path(project_dir, "00_raw_input")
+dir_logs       <- file.path(project_dir, "01_logbook")
+dir_tables     <- file.path(project_dir, "02_processed_tables")
+dir_stats      <- file.path(project_dir, "03_statistics")
+dir_figures    <- file.path(project_dir, "04_figures")
+dir_supplement <- file.path(project_dir, "05_supplementary_tables")
+
+# Create folders if they do not exist
+dir.create(project_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(dir_raw, recursive = TRUE, showWarnings = FALSE)
+dir.create(dir_logs, recursive = TRUE, showWarnings = FALSE)
+dir.create(dir_tables, recursive = TRUE, showWarnings = FALSE)
+dir.create(dir_stats, recursive = TRUE, showWarnings = FALSE)
+dir.create(dir_figures, recursive = TRUE, showWarnings = FALSE)
+dir.create(dir_supplement, recursive = TRUE, showWarnings = FALSE)
+
+# ============================================================
+# 4. Check input file
+# ============================================================
+
+if (!file.exists(input_file)) {
+  stop("Input file not found: ", input_file)
+}
+
+# Copy the raw file into the project folder
+file.copy(
+  from = input_file,
+  to = file.path(dir_raw, basename(input_file)),
+  overwrite = TRUE
+)
+
+# ============================================================
+# 5. Create logbook
+# ============================================================
+
+logbook_file <- file.path(dir_logs, "MetaCyc_analysis_logbook.md")
+
+cat(
+  paste0(
+    "# MetaCyc analysis logbook\n\n",
+    "Date: ", Sys.Date(), "\n\n",
+    "Input file: `", input_file, "`\n\n",
+    "Project folder: `", project_dir, "`\n\n",
+    "## Folder architecture\n\n",
+    "- `00_raw_input/`: copy of the original HUMAnN3 MetaCyc reaction CPM table.\n",
+    "- `01_logbook/`: written record of the analytical workflow.\n",
+    "- `02_processed_tables/`: cleaned and transformed data tables.\n",
+    "- `03_statistics/`: PERMANOVA and category-level statistical outputs.\n",
+    "- `04_figures/`: publication-quality figures in JPG and PDF format.\n",
+    "- `05_supplementary_tables/`: supplementary tables for manuscript use.\n\n"
+  ),
+  file = logbook_file
+)
+
+# Function to add entries to the logbook
+log_step <- function(step_title, why, input_data, output_data) {
+  cat(
+    paste0(
+      "\n## ", step_title, "\n\n",
+      "**Why this step was done:** ", why, "\n\n",
+      "**Input data:** ", input_data, "\n\n",
+      "**Output generated:** ", output_data, "\n\n"
+    ),
+    file = logbook_file,
+    append = TRUE
+  )
+}
+
+log_step(
+  step_title = "Project folder architecture was created",
+  why = "A structured folder system improves reproducibility and separates raw files, processed tables, statistical outputs, figures and logbook records.",
+  input_data = "Original HUMAnN3 MetaCyc reaction CPM table.",
+  output_data = "MetaCyc project folder with organized subfolders."
+)
+
+# Show folder architecture in the HTML output
+folder_architecture <- data.frame(
+  Folder = c(
+    "00_raw_input",
+    "01_logbook",
+    "02_processed_tables",
+    "03_statistics",
+    "04_figures",
+    "05_supplementary_tables"
+  ),
+  Purpose = c(
+    "Stores a copy of the original HUMAnN3 MetaCyc reaction CPM table.",
+    "Stores the written analysis logbook.",
+    "Stores cleaned and transformed tables.",
+    "Stores statistical outputs.",
+    "Stores publication-quality figures.",
+    "Stores supplementary tables for manuscript use."
+  )
+)
+
+folder_architecture
+```
+
+---
+
+# 2. Load required libraries
+
+The workflow uses packages for data manipulation, ecological statistics, heatmap construction and publication-quality plotting.
+
+The package `ggh4x` is optional.
+If it is available, it allows each violin plot facet to have its own log10 y-axis with several tick values.
+If it is not available, the protocol automatically falls back to a shared fixed y-axis.
+
+```{r load-libraries, message=FALSE, warning=FALSE}
+# ============================================================
+# 1. Define required packages
+# ============================================================
+
+cran_repo <- "https://cloud.r-project.org"
+
+required_packages <- c(
+  "tidyverse",
+  "vegan",
+  "pheatmap",
+  "ggplot2",
+  "scales"
+)
+
+# ============================================================
+# 2. Install missing required packages
+# ============================================================
+
+packages_to_install <- required_packages[
+  !required_packages %in% rownames(installed.packages())
+]
+
+if (length(packages_to_install) > 0) {
+  install.packages(packages_to_install, repos = cran_repo)
+}
+
+# ============================================================
+# 3. Load required packages
+# ============================================================
+
+for (pkg in required_packages) {
+  library(pkg, character.only = TRUE)
+}
+
+# grid is part of base/recommended R packages and is used for pheatmap layout editing
+library(grid)
+
+# ============================================================
+# 4. Optional package: ggh4x
+# ============================================================
+
+if (!"ggh4x" %in% rownames(installed.packages())) {
+  message("Optional package ggh4x is not installed. Trying to install it...")
+  try(
+    install.packages("ggh4x", repos = cran_repo),
+    silent = TRUE
+  )
+}
+
+ggh4x_available <- "ggh4x" %in% rownames(installed.packages())
+
+if (ggh4x_available) {
+  library(ggh4x)
+  message("ggh4x is available. Violin plots will use independent y-axis scales per facet.")
+} else {
+  message("ggh4x is not available. Violin plots will use a fixed shared y-axis scale.")
+}
+
+log_step(
+  step_title = "Required R packages were loaded",
+  why = "The workflow requires packages for data manipulation, ecological statistics, heatmaps and publication-quality plotting.",
+  input_data = "Installed R packages in the local R environment.",
+  output_data = "Libraries loaded into the R session. ggh4x is used if available."
+)
+
+sessionInfo()
+```
+
+---
+
+# 3. Read HUMAnN3 MetaCyc reaction CPM table
+
+The input table corresponds to MetaCyc reaction-level abundances generated from HUMAnN3.
+
+Because the file name includes `cpm`, the values are interpreted as CPM-normalized MetaCyc reaction abundances.
+
+```{r read-input-table, message=FALSE, warning=FALSE}
+# ============================================================
+# 1. Import the MetaCyc reaction CPM table
+# ============================================================
+
+metacyc_raw <- readr::read_tsv(
+  input_file,
+  show_col_types = FALSE
+)
+
+# Save original name of first column
+original_feature_col <- colnames(metacyc_raw)[1]
+
+# Rename first column for consistency
+colnames(metacyc_raw)[1] <- "MetaCyc_reaction"
+
+# ============================================================
+# 2. Record raw dimensions
+# ============================================================
+
+raw_dimensions <- data.frame(
+  Metric = c("Number of rows", "Number of columns"),
+  Value = c(nrow(metacyc_raw), ncol(metacyc_raw))
+)
+
+write_csv(
+  raw_dimensions,
+  file.path(dir_tables, "01_raw_table_dimensions.csv")
+)
+
+log_step(
+  step_title = "Raw MetaCyc reaction CPM table was imported",
+  why = "The HUMAnN3 reaction-level CPM table is the starting point for all functional profiling analyses.",
+  input_data = paste0("File: ", input_file),
+  output_data = paste0(
+    "Raw table loaded as metacyc_raw. Original feature column was named `",
+    original_feature_col,
+    "`."
+  )
+)
+
+raw_dimensions
+```
+
+---
+
+# 4. Clean non-informative and stratified entries
+
+HUMAnN3 tables may include entries such as `UNMAPPED` and `UNINTEGRATED`.
+These are useful quality-control categories, but they do not represent interpretable MetaCyc reactions.
+
+Stratified rows containing `|` are also removed because this analysis focuses on total community-level functional profiles, not taxon-specific contributions.
+
+```{r clean-metacyc-table, message=FALSE, warning=FALSE}
+# ============================================================
+# 1. Remove non-informative entries
+# ============================================================
+
+n_initial <- nrow(metacyc_raw)
+
+metacyc_clean <- metacyc_raw %>%
+  filter(!is.na(MetaCyc_reaction)) %>%
+  filter(MetaCyc_reaction != "") %>%
+  filter(!str_detect(MetaCyc_reaction, regex("UNMAPPED|UNINTEGRATED", ignore_case = TRUE)))
+
+n_after_unmapped <- nrow(metacyc_clean)
+
+# ============================================================
+# 2. Keep only unstratified reactions
+# ============================================================
+
+metacyc_unstratified <- metacyc_clean %>%
+  filter(!str_detect(MetaCyc_reaction, "\\|"))
+
+n_after_unstratified <- nrow(metacyc_unstratified)
+
+# ============================================================
+# 3. Save cleaning summary
+# ============================================================
+
+cleaning_summary <- data.frame(
+  Step = c(
+    "Initial rows",
+    "After removing UNMAPPED/UNINTEGRATED/empty rows",
+    "After keeping only unstratified reactions"
+  ),
+  Number_of_rows = c(
+    n_initial,
+    n_after_unmapped,
+    n_after_unstratified
+  )
+)
+
+write_csv(
+  cleaning_summary,
+  file.path(dir_tables, "02_cleaning_summary.csv")
+)
+
+write_csv(
+  metacyc_unstratified,
+  file.path(dir_tables, "03_metacyc_unstratified_clean_table.csv")
+)
+
+log_step(
+  step_title = "Non-informative and stratified MetaCyc entries were removed",
+  why = "UNMAPPED and UNINTEGRATED entries do not represent interpretable reactions. Stratified rows were removed to focus on total community-level functional profiles.",
+  input_data = "Raw MetaCyc reaction CPM table.",
+  output_data = "Clean unstratified MetaCyc reaction table and cleaning summary."
+)
+
+cleaning_summary
+```
+
+---
+
+# 5. Rename samples according to the experimental design
+
+The HUMAnN3 output columns are renamed to make the ecological design explicit.
+
+CC = Cuatro Ciénegas
+VG = Valle de Guadalupe
+
+```{r rename-samples, message=FALSE, warning=FALSE}
+# ============================================================
+# 1. Extract original sample columns
+# ============================================================
+
+sample_columns_original <- colnames(metacyc_unstratified)[-1]
+
+# Remove common HUMAnN3 abundance suffixes
+sample_names_clean <- sample_columns_original %>%
+  str_remove("_Abundance-RPKs$") %>%
+  str_remove("_Abundance-CPM$") %>%
+  str_remove("_CPM$") %>%
+  str_remove("_RPKs$")
+
+# ============================================================
+# 2. Define sample renaming dictionary
+# ============================================================
+
+sample_dictionary <- c(
+  "A1"  = "A1_CC",
+  "A21" = "A2_CC",
+  "A22" = "A3_CC",
+  "A4"  = "B1_CC",
+  "A5"  = "B2_CC",
+  "A6"  = "B3_CC",
+  "A7"  = "C1_CC",
+  "A8"  = "C2_CC",
+  "A9"  = "C3_CC",
+  "A23" = "D1_VG",
+  "A11" = "D2_VG",
+  "A12" = "D3_VG",
+  "A13" = "E1_VG",
+  "A14" = "E2_VG",
+  "A15" = "E3_VG",
+  "A16" = "F1_VG",
+  "A17" = "F2_VG",
+  "A24" = "F3_VG"
+)
+
+new_sample_names <- sample_dictionary[sample_names_clean]
+
+# Safety check
+if (any(is.na(new_sample_names))) {
+  missing_names <- sample_names_clean[is.na(new_sample_names)]
+  stop(
+    "Some sample names were not found in the renaming dictionary: ",
+    paste(missing_names, collapse = ", ")
+  )
+}
+
+# ============================================================
+# 3. Rename columns
+# ============================================================
+
+metacyc_renamed <- metacyc_unstratified
+colnames(metacyc_renamed)[-1] <- new_sample_names
+
+sample_name_table <- data.frame(
+  Original_column = sample_columns_original,
+  Clean_sample_name = sample_names_clean,
+  Renamed_sample = new_sample_names
+)
+
+write_csv(
+  sample_name_table,
+  file.path(dir_tables, "04_sample_renaming_dictionary.csv")
+)
+
+write_csv(
+  metacyc_renamed,
+  file.path(dir_tables, "05_metacyc_clean_renamed_table.csv")
+)
+
+log_step(
+  step_title = "Samples were renamed according to desert origin and sampling layout",
+  why = "Renaming samples makes the ecological design explicit and enables downstream grouping by desert.",
+  input_data = "Clean unstratified MetaCyc reaction table with original HUMAnN3 sample names.",
+  output_data = "Renamed MetaCyc reaction table and sample renaming dictionary."
+)
+
+sample_name_table
+```
+
+---
+
+# 6. Build sample-by-reaction matrix and metadata table
+
+Ecological analyses require a matrix with samples as rows and functions as columns.
+
+```{r build-functional-matrix, message=FALSE, warning=FALSE}
+# ============================================================
+# 1. Build sample-by-reaction matrix
+# ============================================================
+
+metacyc_matrix <- metacyc_renamed %>%
+  column_to_rownames("MetaCyc_reaction") %>%
+  t() %>%
+  as.data.frame()
+
+# Ensure all values are numeric
+metacyc_matrix <- metacyc_matrix %>%
+  mutate(across(everything(), as.numeric))
+
+# Replace missing values with zero
+metacyc_matrix[is.na(metacyc_matrix)] <- 0
+
+# Remove reactions with zero abundance across all samples
+reaction_sums <- colSums(metacyc_matrix, na.rm = TRUE)
+metacyc_matrix <- metacyc_matrix[, reaction_sums > 0, drop = FALSE]
+
+# ============================================================
+# 2. Build sample metadata
+# ============================================================
+
+metadata_samples <- data.frame(
+  Sample = rownames(metacyc_matrix),
+  Desert = case_when(
+    str_detect(rownames(metacyc_matrix), "_CC$") ~ "CC",
+    str_detect(rownames(metacyc_matrix), "_VG$") ~ "VG",
+    TRUE ~ "Unknown"
+  )
+)
+
+metadata_samples$Desert_full <- recode(
+  metadata_samples$Desert,
+  "CC" = "Cuatro Ciénegas",
+  "VG" = "Valle de Guadalupe"
+)
+
+rownames(metadata_samples) <- metadata_samples$Sample
+
+# ============================================================
+# 3. Save matrix and metadata
+# ============================================================
+
+write_csv(
+  metacyc_matrix %>% rownames_to_column("Sample"),
+  file.path(dir_tables, "06_metacyc_sample_by_reaction_matrix.csv")
+)
+
+write_csv(
+  metadata_samples,
+  file.path(dir_tables, "07_sample_metadata.csv")
+)
+
+matrix_summary <- data.frame(
+  Metric = c(
+    "Number of samples",
+    "Number of retained MetaCyc reactions",
+    "Number of CC samples",
+    "Number of VG samples"
+  ),
+  Value = c(
+    nrow(metacyc_matrix),
+    ncol(metacyc_matrix),
+    sum(metadata_samples$Desert == "CC"),
+    sum(metadata_samples$Desert == "VG")
+  )
+)
+
+write_csv(
+  matrix_summary,
+  file.path(dir_tables, "08_matrix_summary.csv")
+)
+
+log_step(
+  step_title = "Sample-by-reaction matrix and metadata table were generated",
+  why = "Ecological analyses require samples as rows and functional features as columns. Metadata are required to compare functional profiles between deserts.",
+  input_data = "Clean renamed MetaCyc reaction table.",
+  output_data = "Sample-by-reaction matrix, sample metadata table and matrix summary."
+)
+
+matrix_summary
+```
+
+---
+
+# 7. Assign reactions to ecological-functional categories
+
+MetaCyc reaction identifiers or names can be difficult to interpret directly.
+This step uses keyword matching to classify reactions into broad ecological-functional categories.
+
+This classification is heuristic and should be interpreted as an ecological annotation layer, not as an official MetaCyc ontology.
+
+```{r assign-functional-categories, message=FALSE, warning=FALSE}
+# ============================================================
+# 1. Function to assign categories by keyword matching
+# ============================================================
+
+assign_functional_category <- function(reaction_name) {
+  
+  x <- reaction_name
+  
+  case_when(
+    str_detect(x, regex("amino acid degradation|degradation of arginine|degradation of leucine|degradation of valine|degradation of tyrosine|degradation of tryptophan|degradation of lysine", ignore_case = TRUE)) ~
+      "Amino acid degradation",
+    
+    str_detect(x, regex("arginine|leucine|lysine|histidine|tryptophan|methionine|valine|isoleucine|phenylalanine|tyrosine|cysteine|serine|threonine|alanine|glutamate|glutamine|aspartate|asparagine|proline|amino acid biosynthesis", ignore_case = TRUE)) ~
+      "Amino acid biosynthesis",
+    
+    str_detect(x, regex("biofilm|adhesin|adhesion|pili|fimbriae|fimbria|extracellular polymeric", ignore_case = TRUE)) ~
+      "Biofilm and adhesion",
+    
+    str_detect(x, regex("superoxide|catalase|peroxidase|oxidative|reactive oxygen|heat shock|cold shock|osmotic|stress|environmental response", ignore_case = TRUE)) ~
+      "Oxidative stress and environmental response",
+    
+    str_detect(x, regex("fermentation|lactate|butyrate|ethanol|alcohol|acetate fermentation|mixed acid", ignore_case = TRUE)) ~
+      "Fermentation",
+    
+    str_detect(x, regex("photosynthesis|photosystem|chlorophyll|bacteriochlorophyll|light-harvesting|light harvesting|carotenoid|retinal|phototrophy", ignore_case = TRUE)) ~
+      "Photosynthesis and pigments",
+    
+    str_detect(x, regex("glycolysis|EMP|Entner|Doudoroff|gluconeogenesis|TCA|tricarboxylic|pyruvate|acetyl|citrate|succinate|fumarate|malate|glyoxylate|central carbon", ignore_case = TRUE)) ~
+      "Glycolysis and central metabolism",
+    
+    str_detect(x, regex("benzoate|phenol|catechol|aromatic|toluene|xylene|salicylate|protocatechuate", ignore_case = TRUE)) ~
+      "Aromatic compound metabolism",
+    
+    str_detect(x, regex("sulfate|sulfite|sulfur|sulphur|sulfide|sulphide|thiosulfate|cysteine sulfur|sulfonate", ignore_case = TRUE)) ~
+      "Sulfur metabolism",
+    
+    str_detect(x, regex("phosphate|phosphonate|phosphatase|polyphosphate|phosphorus|phosphoribosyl", ignore_case = TRUE)) ~
+      "Phosphorus metabolism",
+    
+    str_detect(x, regex("methane|methanogenesis|methylamine|methanol|formate|formaldehyde|one-carbon|one carbon|C1 metabolism", ignore_case = TRUE)) ~
+      "Methane and C1 metabolism",
+    
+    str_detect(x, regex("nitrate|nitrite|ammonium|ammonia|nitrogenase|\\bnif|denitrification|nitrification|urea|urease|nitrogen fixation|nitric oxide|nitrous oxide", ignore_case = TRUE)) ~
+      "Nitrogen metabolism",
+    
+    str_detect(x, regex("purine|pyrimidine|adenine|guanine|cytosine|thymine|uracil|nucleotide|nucleoside", ignore_case = TRUE)) ~
+      "Nucleotides",
+    
+    str_detect(x, regex("peptidoglycan|capsule|LPS|lipopolysaccharide|teichoic|cell wall|polysaccharide|exopolysaccharide|EPS|glycan", ignore_case = TRUE)) ~
+      "Cell wall and polysaccharides",
+    
+    str_detect(x, regex("UV|ultraviolet|photolyase|DNA repair|mycosporine|melanin|sunscreen|photoprotection", ignore_case = TRUE)) ~
+      "UV protection",
+    
+    str_detect(x, regex("cytochrome|oxidase|reductase|ferredoxin|quinone|menaquinone|ubiquinone|electron transport|respiration|NADH dehydrogenase|ATP synthase", ignore_case = TRUE)) ~
+      "Respiration and electron transport",
+    
+    str_detect(x, regex("biotin|folate|cobalamin|thiamine|riboflavin|cofactor|vitamin|NAD|FAD|heme|pantothenate|pyridoxal|menaquinone|ubiquinone", ignore_case = TRUE)) ~
+      "Vitamins and cofactors",
+    
+    TRUE ~ "Other or unclassified functions"
+  )
+}
+
+# ============================================================
+# 2. Apply annotation function to all reactions
+# ============================================================
+
+annotation_reactions <- data.frame(
+  Functional_category = sapply(colnames(metacyc_matrix), assign_functional_category)
+)
+
+rownames(annotation_reactions) <- colnames(metacyc_matrix)
+
+# ============================================================
+# 3. Define final 18 categories
+# ============================================================
+
+selected_categories_final <- c(
+  "Phosphorus metabolism",
+  "Other or unclassified functions",
+  "Fermentation",
+  "Respiration and electron transport",
+  "Aromatic compound metabolism",
+  "Amino acid biosynthesis",
+  "UV protection",
+  "Nucleotides",
+  "Vitamins and cofactors",
+  "Nitrogen metabolism",
+  "Methane and C1 metabolism",
+  "Sulfur metabolism",
+  "Cell wall and polysaccharides",
+  "Biofilm and adhesion",
+  "Amino acid degradation",
+  "Glycolysis and central metabolism",
+  "Oxidative stress and environmental response",
+  "Photosynthesis and pigments"
+)
+
+# Legend order used in the heatmap
+heatmap_category_order <- c(
+  "Amino acid biosynthesis",
+  "Amino acid degradation",
+  "Biofilm and adhesion",
+  "Oxidative stress and environmental response",
+  "Fermentation",
+  "Photosynthesis and pigments",
+  "Glycolysis and central metabolism",
+  "Aromatic compound metabolism",
+  "Sulfur metabolism",
+  "Phosphorus metabolism",
+  "Methane and C1 metabolism",
+  "Nitrogen metabolism",
+  "Nucleotides",
+  "Other or unclassified functions",
+  "Cell wall and polysaccharides",
+  "UV protection",
+  "Respiration and electron transport",
+  "Vitamins and cofactors"
+)
+
+# Facet order used in the violin plot
+violin_category_order <- c(
+  "Sulfur metabolism",
+  "Oxidative stress and environmental response",
+  "Amino acid degradation",
+  "Phosphorus metabolism",
+  "Other or unclassified functions",
+  "UV protection",
+  "Amino acid biosynthesis",
+  "Nucleotides",
+  "Biofilm and adhesion",
+  "Respiration and electron transport",
+  "Cell wall and polysaccharides",
+  "Fermentation",
+  "Vitamins and cofactors",
+  "Nitrogen metabolism",
+  "Aromatic compound metabolism",
+  "Photosynthesis and pigments",
+  "Methane and C1 metabolism",
+  "Glycolysis and central metabolism"
+)
+
+# ============================================================
+# 4. Save annotation summary
+# ============================================================
+
+category_summary_all <- annotation_reactions %>%
+  rownames_to_column("MetaCyc_reaction") %>%
+  count(Functional_category, name = "Number_of_reactions") %>%
+  arrange(desc(Number_of_reactions))
+
+write_csv(
+  annotation_reactions %>% rownames_to_column("MetaCyc_reaction"),
+  file.path(dir_tables, "09_reaction_functional_category_annotation.csv")
+)
+
+write_csv(
+  category_summary_all,
+  file.path(dir_tables, "10_all_functional_category_summary.csv")
+)
+
+log_step(
+  step_title = "MetaCyc reactions were assigned to ecological-functional categories",
+  why = "Reaction-level outputs were grouped into interpretable ecological-functional categories to support figure generation and statistical comparisons.",
+  input_data = "MetaCyc reaction identifiers or names.",
+  output_data = "Reaction annotation table and category summary."
+)
+
+category_summary_all
+```
+
+---
+
+# 8. Select the final 18 ecological-functional categories
+
+This step restricts the analysis to the final set of categories used in the publication-style heatmap and violin plot.
+
+```{r select-final-categories, message=FALSE, warning=FALSE}
+# ============================================================
+# 1. Select reactions belonging to the final 18 categories
+# ============================================================
+
+selected_reactions_publication <- rownames(annotation_reactions)[
+  annotation_reactions$Functional_category %in% selected_categories_final
+]
+
+if (length(selected_reactions_publication) == 0) {
+  stop("No reactions matched the final selected ecological-functional categories.")
+}
+
+metacyc_matrix_selected <- metacyc_matrix[, selected_reactions_publication, drop = FALSE]
+
+annotation_reactions_selected <- annotation_reactions[
+  selected_reactions_publication,
+  ,
+  drop = FALSE
+] %>%
+  mutate(
+    Functional_category = factor(
+      Functional_category,
+      levels = heatmap_category_order
+    )
+  )
+
+# ============================================================
+# 2. Save selected category summary
+# ============================================================
+
+selected_category_summary <- annotation_reactions_selected %>%
+  rownames_to_column("MetaCyc_reaction") %>%
+  count(Functional_category, name = "Number_of_reactions") %>%
+  arrange(Functional_category)
+
+missing_final_categories <- setdiff(
+  selected_categories_final,
+  as.character(unique(annotation_reactions_selected$Functional_category))
+)
+
+missing_category_table <- data.frame(
+  Missing_category = missing_final_categories
+)
+
+write_csv(
+  selected_category_summary,
+  file.path(dir_tables, "11_final_selected_category_summary.csv")
+)
+
+write_csv(
+  annotation_reactions_selected %>% rownames_to_column("MetaCyc_reaction"),
+  file.path(dir_tables, "12_final_selected_reactions.csv")
+)
+
+write_csv(
+  missing_category_table,
+  file.path(dir_tables, "13_missing_final_categories_if_any.csv")
+)
+
+log_step(
+  step_title = "Final 18 ecological-functional categories were selected",
+  why = "The selected categories reproduce the target publication figures and ensure consistency between the heatmap, violin plots and statistical outputs.",
+  input_data = "Reaction category annotation and sample-by-reaction CPM matrix.",
+  output_data = "Selected reaction matrix, selected reaction annotation, category summary and missing-category report."
+)
+
+if (length(missing_final_categories) > 0) {
+  warning(
+    "The following final categories had no matched reactions and will not appear in plots: ",
+    paste(missing_final_categories, collapse = ", ")
+  )
+}
+
+selected_category_summary
+```
+
+---
+
+# 9. PERMANOVA using Bray-Curtis dissimilarity
+
+PERMANOVA tests whether the overall MetaCyc reaction profile differs between deserts.
+
+Bray-Curtis dissimilarity is calculated from relative abundances of the selected MetaCyc reactions.
+
+```{r permanova-functional-profiles, message=FALSE, warning=FALSE}
+# ============================================================
+# 1. Convert CPM matrix to relative abundance
+# ============================================================
+
+metacyc_relative_selected <- metacyc_matrix_selected / rowSums(metacyc_matrix_selected)
+metacyc_relative_selected[is.na(metacyc_relative_selected)] <- 0
+
+# ============================================================
+# 2. Bray-Curtis dissimilarity
+# ============================================================
+
+bray_metacyc <- vegan::vegdist(
+  metacyc_relative_selected,
+  method = "bray"
+)
+
+# ============================================================
+# 3. PERMANOVA
+# ============================================================
+
+permanova_metacyc <- vegan::adonis2(
+  bray_metacyc ~ Desert,
+  data = metadata_samples,
+  permutations = 999
+)
+
+permanova_table <- as.data.frame(permanova_metacyc) %>%
+  rownames_to_column("Term")
+
+write_csv(
+  permanova_table,
+  file.path(dir_stats, "01_PERMANOVA_MetaCyc_18_categories_BrayCurtis.csv")
+)
+
+# Label used in the heatmap
+r2_perm <- permanova_metacyc$R2[1]
+p_perm <- permanova_metacyc$`Pr(>F)`[1]
+
+permanova_label <- paste0(
+  "PERMANOVA: R² = ",
+  round(r2_perm, 3),
+  ", p = ",
+  signif(p_perm, 3)
+)
+
+log_step(
+  step_title = "PERMANOVA was performed on selected MetaCyc functional profiles",
+  why = "PERMANOVA tests whether overall selected MetaCyc reaction profiles differ between deserts.",
+  input_data = "Relative abundance matrix restricted to reactions from the final 18 ecological-functional categories and sample metadata.",
+  output_data = "Bray-Curtis distance object and PERMANOVA table."
+)
+
+permanova_table
+```
+
+---
+
+# 10. Publication heatmap
+
+This heatmap reproduces the publication-style figure using the final 18 ecological-functional categories.
+
+The heatmap is built at the reaction level.
+Rows are samples and columns are MetaCyc reactions.
+Each reaction is scaled across samples using a z-score.
+
+```{r heatmap-publication, message=FALSE, warning=FALSE, fig.width=14, fig.height=10}
+# ============================================================
+# 1. Scale reaction abundances by function
+# ============================================================
+
+metacyc_scaled_selected <- scale(metacyc_matrix_selected)
+
+# ============================================================
+# 2. Prepare sample annotations
+# ============================================================
+
+annotation_samples <- metadata_samples %>%
+  select(Desert)
+
+# ============================================================
+# 3. Define colors for categories and desert
+# ============================================================
+
+category_palette_selected <- c(
+  "#C9A400",
+  "#12B8C9",
+  "#27B5FF",
+  "#59C52C",
+  "#D98CE8",
+  "#F7A6F1",
+  "#D77ACF",
+  "#F27AA8",
+  "#4AA5E8",
+  "#F2AA00",
+  "#E97BDA",
+  "#B9C300",
+  "#8BCF00",
+  "#27C7F2",
+  "#15C95A",
+  "#9C95F0",
+  "#F5A25C",
+  "#20D3C2"
+)
+
+category_colors_selected <- setNames(
+  category_palette_selected,
+  heatmap_category_order
+)
+
+annotation_colors_selected <- list(
+  Desert = c(
+    "CC" = "#F4A09C",
+    "VG" = "#19C9A3"
+  ),
+  Functional_category = category_colors_selected
+)
+
+# ============================================================
+# 4. Generate heatmap
+# ============================================================
+
+heatmap_selected_categories <- pheatmap::pheatmap(
+  metacyc_scaled_selected,
+  annotation_row = annotation_samples,
+  annotation_col = annotation_reactions_selected,
+  annotation_colors = annotation_colors_selected,
+  show_colnames = FALSE,
+  show_rownames = FALSE,
+  cluster_cols = TRUE,
+  cluster_rows = TRUE,
+  fontsize = 9,
+  border_color = NA,
+  color = colorRampPalette(c("navy", "white", "red2"))(100),
+  main = "MetaCyc reactions grouped by ecological category\nFunction-wise scaled abundance (z-score)",
+  silent = TRUE
+)
+
+# Display heatmap in the knitted document
+grid::grid.newpage()
+grid::grid.draw(heatmap_selected_categories$gtable)
+
+grid::grid.text(
+  permanova_label,
+  x = 0.5,
+  y = 0.02,
+  gp = grid::gpar(fontsize = 11, fontface = "bold")
+)
+
+# ============================================================
+# 5. Save JPG
+# ============================================================
+
+jpeg(
+  filename = file.path(dir_figures, "Figure_01_MetaCyc_18_categories_heatmap_zscore_PERMANOVA.jpg"),
+  width = 14,
+  height = 10,
+  units = "in",
+  res = 300
+)
+
+grid::grid.newpage()
+grid::grid.draw(heatmap_selected_categories$gtable)
+
+grid::grid.text(
+  permanova_label,
+  x = 0.5,
+  y = 0.02,
+  gp = grid::gpar(fontsize = 13, fontface = "bold")
+)
+
+dev.off()
+
+# ============================================================
+# 6. Save PDF
+# ============================================================
+
+pdf(
+  file = file.path(dir_figures, "Figure_01_MetaCyc_18_categories_heatmap_zscore_PERMANOVA.pdf"),
+  width = 14,
+  height = 10
+)
+
+grid::grid.newpage()
+grid::grid.draw(heatmap_selected_categories$gtable)
+
+grid::grid.text(
+  permanova_label,
+  x = 0.5,
+  y = 0.02,
+  gp = grid::gpar(fontsize = 13, fontface = "bold")
+)
+
+dev.off()
+
+log_step(
+  step_title = "Publication heatmap was generated",
+  why = "The heatmap reproduces the target figure by grouping MetaCyc reactions into the final ecological-functional categories and scaling abundance by reaction.",
+  input_data = "Selected MetaCyc reaction CPM matrix, sample metadata, reaction category annotation and PERMANOVA results.",
+  output_data = "Publication heatmap in JPG and PDF format."
+)
+```
+
+---
+
+# 11. Build long-format table for category-level abundance
+
+To reproduce the violin plot, MetaCyc reaction abundances are summed within each sample and ecological-functional category.
+
+This produces one abundance value per sample per category.
+
+```{r build-category-abundance-table, message=FALSE, warning=FALSE}
+# ============================================================
+# 1. Prepare selected reaction annotation
+# ============================================================
+
+annotation_reactions_selected_clean <- annotation_reactions_selected %>%
+  rownames_to_column("MetaCyc_reaction") %>%
+  mutate(
+    Functional_category = as.character(Functional_category)
+  )
+
+# ============================================================
+# 2. Convert selected matrix to long format
+# ============================================================
+
+metacyc_long_selected <- metacyc_matrix_selected %>%
+  as.data.frame() %>%
+  rownames_to_column("Sample") %>%
+  pivot_longer(
+    cols = -Sample,
+    names_to = "MetaCyc_reaction",
+    values_to = "CPM_abundance"
+  ) %>%
+  left_join(
+    metadata_samples %>% select(Sample, Desert, Desert_full),
+    by = "Sample"
+  ) %>%
+  left_join(
+    annotation_reactions_selected_clean,
+    by = "MetaCyc_reaction"
+  ) %>%
+  filter(Functional_category %in% selected_categories_final)
+
+# ============================================================
+# 3. Sum CPM abundance per sample and category
+# ============================================================
+
+metacyc_category_sample_selected <- metacyc_long_selected %>%
+  group_by(Sample, Desert, Desert_full, Functional_category) %>%
+  summarise(
+    Category_abundance_CPM = sum(CPM_abundance, na.rm = TRUE),
+    Number_of_reactions = n(),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    # A pseudocount of 1 is added only for log10 visualization
+    Category_abundance_CPM_plot = Category_abundance_CPM + 1,
+    Functional_category = factor(
+      Functional_category,
+      levels = violin_category_order
+    )
+  )
+
+# ============================================================
+# 4. Summary by desert
+# ============================================================
+
+category_summary_by_desert_selected <- metacyc_category_sample_selected %>%
+  group_by(Functional_category, Desert) %>%
+  summarise(
+    Mean_abundance_CPM = mean(Category_abundance_CPM, na.rm = TRUE),
+    Median_abundance_CPM = median(Category_abundance_CPM, na.rm = TRUE),
+    SD = sd(Category_abundance_CPM, na.rm = TRUE),
+    N = n(),
+    SE = SD / sqrt(N),
+    .groups = "drop"
+  )
+
+# ============================================================
+# 5. Save outputs
+# ============================================================
+
+write_csv(
+  metacyc_long_selected,
+  file.path(dir_tables, "14_metacyc_long_selected_18_categories_CPM.csv")
+)
+
+write_csv(
+  metacyc_category_sample_selected,
+  file.path(dir_tables, "15_metacyc_selected_18_categories_by_sample_CPM.csv")
+)
+
+write_csv(
+  category_summary_by_desert_selected,
+  file.path(dir_tables, "16_selected_18_category_summary_by_desert_CPM.csv")
+)
+
+log_step(
+  step_title = "Category-level abundance table was generated",
+  why = "To reproduce the target violin plot, MetaCyc reaction abundances were summed within each sample and ecological-functional category.",
+  input_data = "Selected MetaCyc reaction CPM matrix, sample metadata and selected reaction annotations.",
+  output_data = "Long-format table, category-by-sample abundance table and desert-level category summary."
+)
+
+head(metacyc_category_sample_selected)
+```
+
+---
+
+# 12. Statistical comparison between deserts
+
+Each ecological-functional category is compared between deserts using a Wilcoxon rank-sum test.
+
+P-values are corrected using the Benjamini-Hochberg false discovery rate method.
+
+Cliff's delta is reported as a non-parametric effect size.
+
+```{r category-statistics, message=FALSE, warning=FALSE}
+# ============================================================
+# 1. Function to calculate Cliff's delta
+# ============================================================
+
+cliffs_delta_simple <- function(x, y) {
+  x <- x[!is.na(x)]
+  y <- y[!is.na(y)]
+  
+  if (length(x) == 0 | length(y) == 0) {
+    return(NA_real_)
+  }
+  
+  comparisons <- outer(x, y, "-")
+  
+  delta <- (sum(comparisons > 0) - sum(comparisons < 0)) /
+    (length(x) * length(y))
+  
+  return(delta)
+}
+
+# ============================================================
+# 2. Wilcoxon test, FDR correction and effect size
+# ============================================================
+
+category_statistics_selected <- metacyc_category_sample_selected %>%
+  mutate(Functional_category = as.character(Functional_category)) %>%
+  group_by(Functional_category) %>%
+  summarise(
+    mean_CC = mean(Category_abundance_CPM[Desert == "CC"], na.rm = TRUE),
+    mean_VG = mean(Category_abundance_CPM[Desert == "VG"], na.rm = TRUE),
+    median_CC = median(Category_abundance_CPM[Desert == "CC"], na.rm = TRUE),
+    median_VG = median(Category_abundance_CPM[Desert == "VG"], na.rm = TRUE),
+    delta_mean_VG_minus_CC = mean_VG - mean_CC,
+    
+    p_value = wilcox.test(
+      Category_abundance_CPM[Desert == "CC"],
+      Category_abundance_CPM[Desert == "VG"],
+      exact = FALSE
+    )$p.value,
+    
+    cliffs_delta = cliffs_delta_simple(
+      Category_abundance_CPM[Desert == "VG"],
+      Category_abundance_CPM[Desert == "CC"]
+    ),
+    
+    .groups = "drop"
+  ) %>%
+  mutate(
+    q_value = p.adjust(p_value, method = "BH"),
+    
+    significance = case_when(
+      q_value < 0.001 ~ "***",
+      q_value < 0.01  ~ "**",
+      q_value < 0.05  ~ "*",
+      TRUE ~ ""
+    ),
+    
+    effect_size_magnitude = case_when(
+      abs(cliffs_delta) < 0.147 ~ "negligible",
+      abs(cliffs_delta) < 0.33  ~ "small",
+      abs(cliffs_delta) < 0.474 ~ "medium",
+      abs(cliffs_delta) >= 0.474 ~ "large",
+      TRUE ~ NA_character_
+    ),
+    
+    direction = case_when(
+      cliffs_delta > 0 ~ "VG > CC",
+      cliffs_delta < 0 ~ "CC > VG",
+      cliffs_delta == 0 ~ "No clear direction",
+      TRUE ~ NA_character_
+    ),
+    
+    Functional_category = factor(
+      Functional_category,
+      levels = violin_category_order
+    )
+  ) %>%
+  arrange(Functional_category)
+
+write_csv(
+  category_statistics_selected,
+  file.path(dir_stats, "02_selected_18_categories_Wilcoxon_FDR_CliffsDelta.csv")
+)
+
+log_step(
+  step_title = "Statistical tests were performed for the final 18 ecological-functional categories",
+  why = "Wilcoxon rank-sum tests were used to compare summed category-level abundance between deserts. Benjamini-Hochberg correction controls the false discovery rate.",
+  input_data = "Summed CPM abundance per sample and ecological-functional category.",
+  output_data = "Wilcoxon p-values, FDR-corrected q-values, Cliff's delta, effect-size magnitude and direction of enrichment."
+)
+
+category_statistics_selected
+```
+
+---
+
+# 13. Violin plot with log10 abundance axis
+
+This figure reproduces the target violin plot.
+
+Each panel represents one ecological-functional category.
+The y-axis is displayed in log10 scale.
+Asterisks indicate categories that remain significant after FDR correction.
+
+If `ggh4x` is available, each facet receives its own y-axis breaks, with at least four tick values whenever possible.
+If `ggh4x` is not available, the plot uses a shared fixed y-axis.
+
+```{r violin-plot-log10, message=FALSE, warning=FALSE, fig.width=16, fig.height=10}
+# ============================================================
+# 1. Add significance asterisks to facet labels
+# ============================================================
+
+category_panel_labels_selected <- category_statistics_selected %>%
+  mutate(
+    Functional_category = as.character(Functional_category),
+    Category_panel = if_else(
+      significance != "",
+      paste0(Functional_category, " *"),
+      Functional_category
+    )
+  ) %>%
+  select(Functional_category, Category_panel)
+
+metacyc_category_panel_selected <- metacyc_category_sample_selected %>%
+  mutate(Functional_category = as.character(Functional_category)) %>%
+  left_join(category_panel_labels_selected, by = "Functional_category")
+
+panel_order_selected <- category_statistics_selected %>%
+  mutate(
+    Functional_category = as.character(Functional_category),
+    Category_panel = if_else(
+      significance != "",
+      paste0(Functional_category, " *"),
+      Functional_category
+    )
+  ) %>%
+  arrange(match(Functional_category, violin_category_order)) %>%
+  pull(Category_panel)
+
+metacyc_category_panel_selected <- metacyc_category_panel_selected %>%
+  mutate(
+    Category_panel = factor(Category_panel, levels = panel_order_selected)
+  )
+
+# ============================================================
+# 2. Function to create at least four y-axis breaks per facet
+# ============================================================
+
+candidate_breaks <- c(
+  1, 3, 10, 30, 100, 300,
+  1000, 3000, 10000, 30000, 100000, 300000
+)
+
+get_log_breaks <- function(x) {
+  x <- x[is.finite(x) & !is.na(x) & x > 0]
+  
+  if (length(x) == 0) {
+    return(c(1, 3, 10, 30))
+  }
+  
+  min_x <- min(x)
+  max_x <- max(x)
+  
+  idx_low_candidates <- which(candidate_breaks <= min_x)
+  idx_high_candidates <- which(candidate_breaks >= max_x)
+  
+  idx_low <- ifelse(
+    length(idx_low_candidates) > 0,
+    max(idx_low_candidates),
+    1
+  )
+  
+  idx_high <- ifelse(
+    length(idx_high_candidates) > 0,
+    min(idx_high_candidates),
+    length(candidate_breaks)
+  )
+  
+  while ((idx_high - idx_low + 1) < 4) {
+    if (idx_low > 1) {
+      idx_low <- idx_low - 1
+    }
+    if ((idx_high - idx_low + 1) >= 4) break
+    if (idx_high < length(candidate_breaks)) {
+      idx_high <- idx_high + 1
+    }
+    if (idx_low == 1 && idx_high == length(candidate_breaks)) break
+  }
+  
+  candidate_breaks[idx_low:idx_high]
+}
+
+# ============================================================
+# 3. Create individual y-axis scales for facets when ggh4x exists
+# ============================================================
+
+facet_breaks_table <- metacyc_category_panel_selected %>%
+  group_by(Category_panel) %>%
+  summarise(
+    breaks_list = list(get_log_breaks(Category_abundance_CPM_plot)),
+    .groups = "drop"
+  ) %>%
+  arrange(match(Category_panel, panel_order_selected))
+
+facet_scales_y <- lapply(facet_breaks_table$breaks_list, function(bks) {
+  scale_y_log10(
+    breaks = bks,
+    limits = range(bks),
+    labels = scales::comma_format(accuracy = 1)(bks),
+    minor_breaks = NULL
+  )
+})
+
+# ============================================================
+# 4. Base violin plot
+# ============================================================
+
+base_violin_plot <- ggplot(
+  metacyc_category_panel_selected,
+  aes(
+    x = Desert,
+    y = Category_abundance_CPM_plot,
+    fill = Desert
+  )
+) +
+  geom_violin(
+    trim = FALSE,
+    scale = "width",
+    color = NA,
+    alpha = 0.6
+  ) +
+  geom_boxplot(
+    width = 0.12,
+    outlier.shape = NA,
+    alpha = 0.9,
+    color = "#333333"
+  ) +
+  scale_fill_manual(
+    values = c(
+      "CC" = "#F4A09C",
+      "VG" = "#68D5D2"
+    ),
+    labels = c(
+      "CC" = "CC",
+      "VG" = "VG"
+    )
+  ) +
+  labs(
+    title = NULL,
+    x = "Desert",
+    y = "Abundance (log10)",
+    caption = paste(
+      "Wilcoxon rank-sum tests were used to compare category-level summed CPM abundance between deserts.",
+      "P-values were adjusted using the Benjamini-Hochberg false discovery rate correction.",
+      "Asterisks indicate q < 0.05 after FDR correction.",
+      "A pseudocount of 1 was added only for visualization on the log10 scale.",
+      sep = "\n"
+    )
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    strip.text = element_text(face = "bold", size = 11),
+    axis.text.x = element_text(angle = 30, hjust = 1, size = 12),
+    axis.title.x = element_text(size = 18),
+    axis.title.y = element_text(size = 18),
+    legend.position = "none",
+    plot.caption = element_text(hjust = 0, size = 10),
+    panel.grid.minor = element_blank()
+  )
+
+# ============================================================
+# 5. Final violin plot
+# ============================================================
+
+if (ggh4x_available) {
+  
+  figure_violin_selected_categories <- base_violin_plot +
+    facet_wrap(
+      ~ Category_panel,
+      scales = "free_y",
+      ncol = 4
+    ) +
+    ggh4x::facetted_pos_scales(
+      y = facet_scales_y
+    )
+  
+} else {
+  
+  figure_violin_selected_categories <- base_violin_plot +
+    facet_wrap(
+      ~ Category_panel,
+      scales = "fixed",
+      ncol = 4
+    ) +
+    scale_y_log10(
+      breaks = c(
+        1, 3, 10, 30, 100, 300,
+        1000, 3000, 10000, 30000, 100000, 300000
+      ),
+      labels = c(
+        "1", "3", "10", "30", "100", "300",
+        "1,000", "3,000", "10,000", "30,000", "100,000", "300,000"
+      )
+    )
+}
+
+figure_violin_selected_categories
+
+# ============================================================
+# 6. Save violin plot
+# ============================================================
+
+ggsave(
+  filename = file.path(dir_figures, "Figure_02_MetaCyc_18_categories_violin_log10.jpg"),
+  plot = figure_violin_selected_categories,
+  width = 16,
+  height = 10,
+  units = "in",
+  dpi = 300
+)
+
+ggsave(
+  filename = file.path(dir_figures, "Figure_02_MetaCyc_18_categories_violin_log10.pdf"),
+  plot = figure_violin_selected_categories,
+  width = 16,
+  height = 10,
+  units = "in"
+)
+
+log_step(
+  step_title = "Violin plot was generated for the final 18 ecological-functional categories",
+  why = "The figure reproduces the target publication layout by showing category-level abundance distributions on a log10 scale and marking statistically significant categories.",
+  input_data = "Summed CPM abundance per sample and ecological-functional category, plus Wilcoxon/FDR results.",
+  output_data = "Publication-style violin plot in JPG and PDF format."
+)
+```
+
+---
+
+# 14. Ecological interpretation table
+
+This table links statistical results to ecological interpretation for the same 18 categories used in the heatmap and violin plot.
+
+```{r ecological-interpretation-table, message=FALSE, warning=FALSE}
+# ============================================================
+# 1. Calculate dominant desert per category
+# ============================================================
+
+category_wide_selected <- metacyc_category_sample_selected %>%
+  mutate(Functional_category = as.character(Functional_category)) %>%
+  group_by(Functional_category, Desert) %>%
+  summarise(
+    Mean_abundance_CPM = mean(Category_abundance_CPM, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  pivot_wider(
+    names_from = Desert,
+    values_from = Mean_abundance_CPM
+  ) %>%
+  mutate(
+    Dominant_desert = case_when(
+      CC > VG ~ "Cuatro Ciénegas",
+      VG > CC ~ "Valle de Guadalupe",
+      TRUE ~ "Similar"
+    )
+  )
+
+# ============================================================
+# 2. Merge statistics with ecological interpretation
+# ============================================================
+
+ecological_interpretation_selected <- category_statistics_selected %>%
+  mutate(Functional_category = as.character(Functional_category)) %>%
+  left_join(category_wide_selected, by = "Functional_category") %>%
+  mutate(
+    Statistical_support = if_else(
+      q_value < 0.05,
+      "Supported after FDR correction",
+      "Not significant after FDR correction"
+    ),
+    
+    Ecological_interpretation = case_when(
+      q_value < 0.05 & Dominant_desert == "Cuatro Ciénegas" ~
+        "Higher category-level abundance in Cuatro Ciénegas.",
+      
+      q_value < 0.05 & Dominant_desert == "Valle de Guadalupe" ~
+        "Higher category-level abundance in Valle de Guadalupe.",
+      
+      q_value >= 0.05 ~
+        "No statistically supported difference after FDR correction.",
+      
+      TRUE ~ "Pattern requires further inspection."
+    ),
+    
+    Functional_category = factor(
+      Functional_category,
+      levels = violin_category_order
+    )
+  ) %>%
+  arrange(Functional_category)
+
+write_csv(
+  ecological_interpretation_selected,
+  file.path(dir_supplement, "Supplementary_Table_MetaCyc_18_categories_ecological_interpretation.csv")
+)
+
+log_step(
+  step_title = "Ecological interpretation table was generated",
+  why = "Statistical results were translated into ecological interpretation using the same 18 functional categories shown in the publication figures.",
+  input_data = "Category-level statistics and desert-level mean abundances.",
+  output_data = "Supplementary ecological interpretation table."
+)
+
+ecological_interpretation_selected
+```
+
+---
+
+# 15. Final output summary
+
+This final section records all files generated by the workflow.
+
+```{r final-output-summary, message=FALSE, warning=FALSE}
+# ============================================================
+# 1. List generated files
+# ============================================================
+
+generated_files <- list.files(
+  project_dir,
+  recursive = TRUE,
+  full.names = TRUE
+)
+
+generated_files_table <- data.frame(
+  File = generated_files,
+  Folder = dirname(generated_files),
+  File_name = basename(generated_files)
+)
+
+write_csv(
+  generated_files_table,
+  file.path(project_dir, "MetaCyc_generated_files_summary.csv")
+)
+
+log_step(
+  step_title = "Analysis completed",
+  why = "A final output summary helps identify all files generated by the workflow and supports reproducibility.",
+  input_data = "All files generated inside the MetaCyc project directory.",
+  output_data = "MetaCyc_generated_files_summary.csv and completed analysis logbook."
+)
+
+generated_files_table
+```
+
+---
+
+# 16. Main outputs
+
+After running the workflow, the main results will be saved in:
+
+```text
+/Users/alejandrasarmina/Desktop/HUMAnN3_analisis/MetaCyc
+```
+
+The main figures will be saved in:
+
+```text
+/Users/alejandrasarmina/Desktop/HUMAnN3_analisis/MetaCyc/04_figures
+```
+
+Main figure files:
+
+```text
+Figure_01_MetaCyc_18_categories_heatmap_zscore_PERMANOVA.jpg
+Figure_01_MetaCyc_18_categories_heatmap_zscore_PERMANOVA.pdf
+Figure_02_MetaCyc_18_categories_violin_log10.jpg
+Figure_02_MetaCyc_18_categories_violin_log10.pdf
+```
+
+The logbook will be saved in:
+
+```text
+/Users/alejandrasarmina/Desktop/HUMAnN3_analisis/MetaCyc/01_logbook/MetaCyc_analysis_logbook.md
+```
+
+
+
+
+
+

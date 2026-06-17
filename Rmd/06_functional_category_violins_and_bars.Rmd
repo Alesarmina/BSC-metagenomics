@@ -1,0 +1,6222 @@
+---
+title: "violines_metacyc_figura 5"
+author: "Alejandra_Sarmina"
+date: "2026-06-16"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r}
+# ============================================================
+# BLOQUE 0. PREPARACIÓN DEL ENTORNO, RUTAS Y BITÁCORA
+# Protocolo: Violines MetaCyc HUMAnN3
+# Modo: reproducibilidad estricta
+# ============================================================
+
+# 0.1 Limpiar consola y ambiente ------------------------------------------
+
+rm(list = ls())
+cat("\014")
+
+# 0.2 Definir raíz general del proyecto -----------------------------------
+# Todo debe quedar dentro de esta carpeta, como solicitaste.
+
+BASE_DIR <- "/Users/ale/Desktop/HUMAnN3"
+
+# Carpeta nueva para este protocolo.
+# No se usa una carpeta temporal porque queremos trazabilidad y rutas estables.
+PROJECT_DIR <- file.path(BASE_DIR, "MetaCyc_violins_reproducible")
+
+# 0.3 Crear estructura de carpetas ----------------------------------------
+
+dirs <- c(
+  PROJECT_DIR,
+  file.path(PROJECT_DIR, "metadata"),
+  file.path(PROJECT_DIR, "results"),
+  file.path(PROJECT_DIR, "results", "figures"),
+  file.path(PROJECT_DIR, "results", "figures", "spanish_exact"),
+  file.path(PROJECT_DIR, "results", "figures", "english_publication"),
+  file.path(PROJECT_DIR, "results", "tables"),
+  file.path(PROJECT_DIR, "results", "statistics"),
+  file.path(PROJECT_DIR, "results", "qc"),
+  file.path(PROJECT_DIR, "results", "objects"),
+  file.path(PROJECT_DIR, "results", "logs"),
+  file.path(PROJECT_DIR, "docs")
+)
+
+dir.create(PROJECT_DIR, recursive = TRUE, showWarnings = FALSE)
+invisible(lapply(dirs, dir.create, recursive = TRUE, showWarnings = FALSE))
+
+# 0.4 Activar modo reproducibilidad estricta -------------------------------
+# No instala paquetes automáticamente.
+# No selecciona archivos ambiguos automáticamente.
+# No modifica filtros, transformaciones, umbrales ni pruebas estadísticas.
+
+STRICT_REPRODUCIBILITY <- TRUE
+set.seed(123)
+
+options(
+  stringsAsFactors = FALSE,
+  scipen = 999,
+  warn = 1
+)
+
+# 0.5 Verificar paquetes necesarios ---------------------------------------
+# En este primer bloque solo cargamos los paquetes indispensables
+# para preparar rutas, bitácora y diagnósticos iniciales.
+# Los paquetes específicos de gráficas/tablas se revisarán en bloques posteriores.
+
+required_packages <- c(
+  "tidyverse",
+  "rstatix"
+)
+
+missing_packages <- required_packages[
+  !vapply(required_packages, requireNamespace, logical(1), quietly = TRUE)
+]
+
+if (length(missing_packages) > 0) {
+  stop(
+    paste0(
+      "Faltan paquetes necesarios para continuar: ",
+      paste(missing_packages, collapse = ", "),
+      "\nInstálalos antes de seguir. Ejemplo:\ninstall.packages(c(",
+      paste(sprintf('\"%s\"', missing_packages), collapse = ", "),
+      "))"
+    )
+  )
+}
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(rstatix)
+})
+
+# 0.6 Crear bitácora automática -------------------------------------------
+
+log_file <- file.path(PROJECT_DIR, "results", "logs", "bitacora_automatica.tsv")
+
+if (!file.exists(log_file)) {
+  bitacora_header <- tibble(
+    timestamp = character(),
+    bloque = character(),
+    accion = character(),
+    decision_tecnica = character(),
+    razon = character(),
+    resultado = character()
+  )
+  readr::write_tsv(bitacora_header, log_file)
+}
+
+log_step <- function(bloque, accion, decision_tecnica, razon, resultado = "OK") {
+  entrada <- tibble(
+    timestamp = as.character(Sys.time()),
+    bloque = bloque,
+    accion = accion,
+    decision_tecnica = decision_tecnica,
+    razon = razon,
+    resultado = resultado
+  )
+  readr::write_tsv(entrada, log_file, append = TRUE)
+}
+
+log_step(
+  bloque = "Bloque 0",
+  accion = "Inicialización del protocolo",
+  decision_tecnica = "Crear estructura nueva dentro de /Users/ale/Desktop/HUMAnN3",
+  razon = "La usuaria solicitó que todo el protocolo, salidas, bitácora y diagnósticos quedaran dentro de esta ruta.",
+  resultado = "Carpetas creadas o ya existentes"
+)
+
+# 0.7 Registrar decisiones técnicas iniciales ------------------------------
+
+decisiones_file <- file.path(PROJECT_DIR, "docs", "00_decisiones_tecnicas_iniciales.tsv")
+
+decisiones_iniciales <- tibble(
+  decision = c(
+    "Usar /Users/ale/Desktop/HUMAnN3 como raíz obligatoria",
+    "Crear una carpeta nueva para este protocolo",
+    "Mantener modo reproducibilidad estricta",
+    "No instalar paquetes automáticamente",
+    "No seleccionar archivos ambiguos automáticamente",
+    "Reproducir primero la versión exacta en español",
+    "Después generar versión de publicación en inglés",
+    "No cambiar filtros, transformaciones, umbrales ni pruebas estadísticas",
+    "Diagnosticar archivos KO solicitados sin usarlos para alterar la figura MetaCyc original",
+    "Confirmar presencia de rxn-cpm-metacyc.tsv porque la figura de violines MetaCyc original depende de ese archivo"
+  ),
+  razon = c(
+    "Evita dispersión de resultados y facilita auditoría.",
+    "Separa este protocolo de análisis previos.",
+    "Permite rastrear rutas, paquetes, archivos y decisiones.",
+    "Instalar paquetes durante el análisis puede cambiar versiones y afectar reproducibilidad.",
+    "Si hay más de un archivo con el mismo nombre, se detiene el protocolo hasta decidir manualmente.",
+    "La figura subida está en español y debe reproducirse exactamente antes de traducirse.",
+    "La versión en inglés será derivada de los mismos objetos y estadísticos.",
+    "La usuaria pidió conservar estrictamente el protocolo original.",
+    "Los archivos KO pertenecen al flujo HUMAnN3-KO y serán documentados, pero no sustituyen el insumo MetaCyc de la figura original.",
+    "El HTML anterior del protocolo de violines lee rxn-cpm-metacyc.tsv como tabla MetaCyc cruda."
+  )
+)
+
+readr::write_tsv(decisiones_iniciales, decisiones_file)
+
+log_step(
+  bloque = "Bloque 0",
+  accion = "Registro de decisiones iniciales",
+  decision_tecnica = "Guardar decisiones en docs/00_decisiones_tecnicas_iniciales.tsv",
+  razon = "Documentar explícitamente qué se hará y qué no se cambiará.",
+  resultado = "Archivo de decisiones guardado"
+)
+
+# 0.8 Buscar archivos de entrada dentro de BASE_DIR ------------------------
+# En este bloque solo se localizan archivos.
+# La lectura diagnóstica detallada se hará en el Bloque 1.
+
+input_files_to_find <- c(
+  "rxn-cpm-metacyc.tsv",
+  "subset_genefamilies.tsv",
+  "uniref90_ko_reduced_long.tsv",
+  "ko_name_reduced.tsv"
+)
+
+find_file_strict <- function(filename, base_dir) {
+  hits <- list.files(
+    path = base_dir,
+    pattern = paste0("^", filename, "$"),
+    recursive = TRUE,
+    full.names = TRUE
+  )
+  
+  tibble(
+    filename = filename,
+    n_found = length(hits),
+    path = if (length(hits) == 0) NA_character_ else hits
+  )
+}
+
+input_registry <- purrr::map_dfr(
+  input_files_to_find,
+  find_file_strict,
+  base_dir = BASE_DIR
+)
+
+# Agregar huella MD5 cuando el archivo existe
+input_registry <- input_registry %>%
+  mutate(
+    exists = !is.na(path),
+    md5 = if_else(
+      exists,
+      as.character(tools::md5sum(path)),
+      NA_character_
+    )
+  )
+
+input_registry_file <- file.path(PROJECT_DIR, "metadata", "00_input_files_detected.tsv")
+readr::write_tsv(input_registry, input_registry_file)
+
+log_step(
+  bloque = "Bloque 0",
+  accion = "Búsqueda de archivos de entrada",
+  decision_tecnica = "Buscar archivos por nombre exacto dentro de BASE_DIR",
+  razon = "Evitar rutas hardcodeadas incorrectas y documentar los archivos realmente usados.",
+  resultado = paste0("Registro guardado en: ", input_registry_file)
+)
+
+# 0.9 Registrar ambiente de R ----------------------------------------------
+
+environment_file <- file.path(PROJECT_DIR, "metadata", "00_R_environment.txt")
+
+sink(environment_file)
+cat("Fecha y hora:\n")
+print(Sys.time())
+cat("\nBASE_DIR:\n")
+print(BASE_DIR)
+cat("\nPROJECT_DIR:\n")
+print(PROJECT_DIR)
+cat("\nR version:\n")
+print(R.version.string)
+cat("\nPlataforma:\n")
+print(R.version$platform)
+cat("\nPaquetes cargados:\n")
+print(sessionInfo())
+sink()
+
+log_step(
+  bloque = "Bloque 0",
+  accion = "Registro del ambiente de R",
+  decision_tecnica = "Guardar sessionInfo completo",
+  razon = "Permite reproducir versiones de R, sistema operativo y paquetes.",
+  resultado = paste0("Ambiente guardado en: ", environment_file)
+)
+
+# 0.10 Revisión estricta de ambigüedad de archivos -------------------------
+
+file_summary <- input_registry %>%
+  group_by(filename) %>%
+  summarise(
+    n_found_total = max(n_found),
+    paths = paste(na.omit(path), collapse = " | "),
+    .groups = "drop"
+  )
+
+print(file_summary)
+
+# Mensajes diagnósticos claros
+cat("\n============================================================\n")
+cat("BLOQUE 0 COMPLETADO\n")
+cat("============================================================\n")
+cat("Proyecto creado en:\n")
+cat(PROJECT_DIR, "\n\n")
+
+cat("Bitácora automática:\n")
+cat(log_file, "\n\n")
+
+cat("Registro de archivos detectados:\n")
+cat(input_registry_file, "\n\n")
+
+cat("Ambiente de R:\n")
+cat(environment_file, "\n\n")
+
+cat("Resumen de archivos encontrados:\n")
+print(file_summary)
+
+cat("\nInterpretación:\n")
+cat("- n_found_total = 0: el archivo no fue encontrado dentro de BASE_DIR.\n")
+cat("- n_found_total = 1: archivo encontrado de forma estricta.\n")
+cat("- n_found_total > 1: hay ambigüedad; no avanzaremos hasta elegir la ruta correcta.\n")
+
+# 0.11 Detener si falta el archivo MetaCyc principal -----------------------
+# Este archivo es indispensable para reproducir exactamente los violines MetaCyc.
+
+rxn_check <- file_summary %>%
+  filter(filename == "rxn-cpm-metacyc.tsv") %>%
+  pull(n_found_total)
+
+if (length(rxn_check) == 0 || rxn_check == 0) {
+  stop(
+    paste0(
+      "No se encontró rxn-cpm-metacyc.tsv dentro de: ", BASE_DIR,
+      "\nEste archivo es necesario para reproducir exactamente los violines MetaCyc del protocolo original.",
+      "\nBusca dónde está o colócalo dentro de /Users/ale/Desktop/HUMAnN3 antes de avanzar."
+    )
+  )
+}
+
+if (rxn_check > 1 && STRICT_REPRODUCIBILITY) {
+  stop(
+    paste0(
+      "Se encontró más de un rxn-cpm-metacyc.tsv dentro de: ", BASE_DIR,
+      "\nEn modo reproducibilidad estricta no se selecciona uno automáticamente.",
+      "\nRevisa metadata/00_input_files_detected.tsv y dime cuál ruta debemos usar."
+    )
+  )
+}
+
+cat("\nEstado del archivo MetaCyc principal: OK\n")
+cat("Puedes compartir la salida de este bloque para avanzar al Bloque 1.\n")
+```
+```{r}
+# ============================================================
+# BLOQUE 0B. SELECCIÓN MANUAL DE ARCHIVOS DE ENTRADA
+# Protocolo: Violines MetaCyc HUMAnN3
+# Modo: reproducibilidad estricta
+# ============================================================
+
+# Este bloque resuelve la ambigüedad detectada en el Bloque 0.
+# No selecciona archivos automáticamente.
+# Se declaran rutas explícitas y se registran en la bitácora.
+
+# 0B.1 Reestablecer rutas centrales ---------------------------------------
+
+BASE_DIR <- "/Users/ale/Desktop/HUMAnN3"
+PROJECT_DIR <- file.path(BASE_DIR, "MetaCyc_violins_reproducible")
+
+log_file <- file.path(PROJECT_DIR, "results", "logs", "bitacora_automatica.tsv")
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+})
+
+log_step <- function(bloque, accion, decision_tecnica, razon, resultado = "OK") {
+  entrada <- tibble(
+    timestamp = as.character(Sys.time()),
+    bloque = bloque,
+    accion = accion,
+    decision_tecnica = decision_tecnica,
+    razon = razon,
+    resultado = resultado
+  )
+  readr::write_tsv(entrada, log_file, append = TRUE)
+}
+
+# 0B.2 Declarar manualmente los archivos que SÍ se usarán ------------------
+# IMPORTANTE:
+# rxn-cpm-metacyc.tsv será el archivo usado para reproducir los violines MetaCyc.
+# Los archivos KO se registran y se diagnosticarán porque lo solicitaste,
+# pero no sustituirán el flujo original de MetaCyc.
+
+selected_files <- tibble(
+  file_role = c(
+    "MetaCyc reactions CPM table",
+    "HUMAnN3 gene families table",
+    "UniRef90 to KO mapping table",
+    "KO names table"
+  ),
+  filename = c(
+    "rxn-cpm-metacyc.tsv",
+    "subset_genefamilies.tsv",
+    "uniref90_ko_reduced_long.tsv",
+    "ko_name_reduced.tsv"
+  ),
+  selected_path = c(
+    file.path(BASE_DIR, "hummann_origen", "rxn-cpm-metacyc.tsv"),
+    file.path(BASE_DIR, "subset_genefamilies.tsv"),
+    file.path(BASE_DIR, "uniref_mapping_reducido", "uniref90_ko_reduced_long.tsv"),
+    file.path(BASE_DIR, "uniref_mapping_reducido", "ko_name_reduced.tsv")
+  ),
+  reason_for_selection = c(
+    "Es el archivo MetaCyc de origen usado para reproducir la figura de violines por categoría funcional.",
+    "Se registra para diagnóstico de entrada solicitado; no altera la figura MetaCyc original.",
+    "Se registra para diagnóstico de entrada solicitado; no altera la figura MetaCyc original.",
+    "Se registra para diagnóstico de entrada solicitado; no altera la figura MetaCyc original."
+  )
+)
+
+# 0B.3 Verificar existencia estricta ---------------------------------------
+
+selected_files <- selected_files %>%
+  mutate(
+    exists = file.exists(selected_path),
+    file_size_bytes = if_else(
+      exists,
+      as.numeric(file.info(selected_path)$size),
+      NA_real_
+    ),
+    md5 = if_else(
+      exists,
+      as.character(tools::md5sum(selected_path)),
+      NA_character_
+    )
+  )
+
+print(selected_files)
+
+if (any(!selected_files$exists)) {
+  stop(
+    paste0(
+      "Al menos uno de los archivos seleccionados manualmente no existe.\n",
+      "Revisa la tabla impresa arriba y corrige selected_path antes de continuar."
+    )
+  )
+}
+
+# 0B.4 Guardar registro de archivos seleccionados --------------------------
+
+selected_files_file <- file.path(
+  PROJECT_DIR,
+  "metadata",
+  "00B_selected_input_files.tsv"
+)
+
+readr::write_tsv(selected_files, selected_files_file)
+
+log_step(
+  bloque = "Bloque 0B",
+  accion = "Selección manual de archivos de entrada",
+  decision_tecnica = paste(selected_files$selected_path, collapse = " | "),
+  razon = "El Bloque 0 detectó múltiples copias de archivos; en modo reproducibilidad estricta se requiere selección manual explícita.",
+  resultado = paste0("Registro guardado en: ", selected_files_file)
+)
+
+# 0B.5 Crear objetos de rutas para bloques posteriores ---------------------
+
+RXN_METACYC_FILE <- selected_files %>%
+  filter(filename == "rxn-cpm-metacyc.tsv") %>%
+  pull(selected_path)
+
+SUBSET_GENEFAMILIES_FILE <- selected_files %>%
+  filter(filename == "subset_genefamilies.tsv") %>%
+  pull(selected_path)
+
+UNIREF_KO_FILE <- selected_files %>%
+  filter(filename == "uniref90_ko_reduced_long.tsv") %>%
+  pull(selected_path)
+
+KO_NAME_FILE <- selected_files %>%
+  filter(filename == "ko_name_reduced.tsv") %>%
+  pull(selected_path)
+
+# 0B.6 Guardar objetos de rutas --------------------------------------------
+
+paths_rds_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "00B_selected_paths.rds"
+)
+
+saveRDS(
+  list(
+    BASE_DIR = BASE_DIR,
+    PROJECT_DIR = PROJECT_DIR,
+    RXN_METACYC_FILE = RXN_METACYC_FILE,
+    SUBSET_GENEFAMILIES_FILE = SUBSET_GENEFAMILIES_FILE,
+    UNIREF_KO_FILE = UNIREF_KO_FILE,
+    KO_NAME_FILE = KO_NAME_FILE,
+    selected_files = selected_files
+  ),
+  paths_rds_file
+)
+
+log_step(
+  bloque = "Bloque 0B",
+  accion = "Guardado de objetos de rutas",
+  decision_tecnica = "Guardar rutas seleccionadas en archivo RDS",
+  razon = "Los bloques posteriores podrán recuperar exactamente las mismas rutas sin volver a decidir.",
+  resultado = paste0("Objeto guardado en: ", paths_rds_file)
+)
+
+cat("\n============================================================\n")
+cat("BLOQUE 0B COMPLETADO\n")
+cat("============================================================\n")
+cat("Archivos seleccionados y validados:\n\n")
+print(selected_files %>% select(filename, exists, file_size_bytes, md5, selected_path))
+
+cat("\nRegistro guardado en:\n")
+cat(selected_files_file, "\n\n")
+
+cat("Objeto de rutas guardado en:\n")
+cat(paths_rds_file, "\n\n")
+
+cat("Siguiente paso: Bloque 1, diagnóstico detallado de tablas de entrada.\n")
+```
+```{r}
+# ============================================================
+# BLOQUE 1. DIAGNÓSTICO ESTRICTO DE TABLAS DE ENTRADA
+# Protocolo: Violines MetaCyc HUMAnN3
+# Modo: reproducibilidad estricta
+# ============================================================
+
+# Objetivo de este bloque:
+# 1. Revisar cómo vienen las tablas de entrada seleccionadas en Bloque 0B.
+# 2. Documentar dimensiones, nombres de columnas, primeras filas, tipos inferidos,
+#    valores faltantes y posibles duplicados en la primera columna.
+# 3. Confirmar que rxn-cpm-metacyc.tsv tiene estructura compatible con el protocolo original.
+# 4. Diagnosticar subset_genefamilies.tsv, uniref90_ko_reduced_long.tsv y ko_name_reduced.tsv
+#    sin usarlos para modificar la figura MetaCyc original.
+#
+# Importante:
+# Este bloque NO elimina filas.
+# Este bloque NO renombra muestras.
+# Este bloque NO asigna categorías.
+# Este bloque NO calcula estadísticos.
+# Este bloque NO grafica.
+# Solo diagnostica y registra.
+
+# 1.1 Cargar paquetes ------------------------------------------------------
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+})
+
+# 1.2 Recuperar rutas seleccionadas ---------------------------------------
+
+BASE_DIR <- "/Users/ale/Desktop/HUMAnN3"
+PROJECT_DIR <- file.path(BASE_DIR, "MetaCyc_violins_reproducible")
+
+paths_rds_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "00B_selected_paths.rds"
+)
+
+if (!file.exists(paths_rds_file)) {
+  stop(
+    paste0(
+      "No se encontró el objeto de rutas del Bloque 0B:\n",
+      paths_rds_file,
+      "\nVuelve a correr el Bloque 0B antes de continuar."
+    )
+  )
+}
+
+paths <- readRDS(paths_rds_file)
+
+RXN_METACYC_FILE <- paths$RXN_METACYC_FILE
+SUBSET_GENEFAMILIES_FILE <- paths$SUBSET_GENEFAMILIES_FILE
+UNIREF_KO_FILE <- paths$UNIREF_KO_FILE
+KO_NAME_FILE <- paths$KO_NAME_FILE
+
+log_file <- file.path(PROJECT_DIR, "results", "logs", "bitacora_automatica.tsv")
+
+log_step <- function(bloque, accion, decision_tecnica, razon, resultado = "OK") {
+  entrada <- tibble(
+    timestamp = as.character(Sys.time()),
+    bloque = bloque,
+    accion = accion,
+    decision_tecnica = decision_tecnica,
+    razon = razon,
+    resultado = resultado
+  )
+  readr::write_tsv(entrada, log_file, append = TRUE)
+}
+
+log_step(
+  bloque = "Bloque 1",
+  accion = "Inicio de diagnóstico de tablas",
+  decision_tecnica = "Usar rutas seleccionadas manualmente en Bloque 0B",
+  razon = "Evitar ambigüedad y asegurar reproducibilidad estricta.",
+  resultado = "Rutas recuperadas correctamente"
+)
+
+# 1.3 Funciones auxiliares -------------------------------------------------
+
+count_lines_wc <- function(path) {
+  # Usa wc -l para contar líneas sin cargar el archivo completo en memoria.
+  # En macOS debe funcionar de forma nativa.
+  out <- system2("wc", args = c("-l", shQuote(path)), stdout = TRUE, stderr = TRUE)
+  as.numeric(str_extract(out[1], "\\d+"))
+}
+
+read_header_fields <- function(path) {
+  header <- readr::read_lines(path, n_max = 1)
+  strsplit(header, "\t", fixed = TRUE)[[1]]
+}
+
+safe_preview <- function(path, n = 5) {
+  readr::read_tsv(
+    path,
+    n_max = n,
+    show_col_types = FALSE,
+    progress = FALSE
+  )
+}
+
+safe_types_sample <- function(path, n = 1000) {
+  preview <- readr::read_tsv(
+    path,
+    n_max = n,
+    show_col_types = FALSE,
+    progress = FALSE
+  )
+  
+  tibble(
+    column = names(preview),
+    inferred_class = vapply(preview, function(x) paste(class(x), collapse = "|"), character(1)),
+    n_missing_in_sample = vapply(preview, function(x) sum(is.na(x)), integer(1)),
+    n_unique_in_sample = vapply(preview, function(x) dplyr::n_distinct(x, na.rm = TRUE), integer(1))
+  )
+}
+
+safe_first_column_diagnostic <- function(path) {
+  header <- read_header_fields(path)
+  first_col <- header[1]
+  
+  first_col_data <- readr::read_tsv(
+    path,
+    col_select = all_of(first_col),
+    show_col_types = FALSE,
+    progress = FALSE
+  )
+  
+  first_values <- first_col_data[[1]]
+  
+  tibble(
+    first_column = first_col,
+    n_rows_read = length(first_values),
+    n_missing_first_column = sum(is.na(first_values)),
+    n_duplicated_first_column = sum(duplicated(first_values)),
+    n_unique_first_column = dplyr::n_distinct(first_values, na.rm = TRUE),
+    first_5_values = paste(head(first_values, 5), collapse = " | ")
+  )
+}
+
+diagnose_table <- function(path, table_name, expected_role) {
+  
+  cat("\n------------------------------------------------------------\n")
+  cat("Diagnóstico de tabla:", table_name, "\n")
+  cat("Ruta:", path, "\n")
+  cat("------------------------------------------------------------\n")
+  
+  if (!file.exists(path)) {
+    stop(paste0("No existe el archivo: ", path))
+  }
+  
+  header <- read_header_fields(path)
+  n_lines <- count_lines_wc(path)
+  n_rows_estimated <- n_lines - 1
+  n_cols <- length(header)
+  file_size <- as.numeric(file.info(path)$size)
+  md5_value <- as.character(tools::md5sum(path))
+  
+  preview <- safe_preview(path, n = 5)
+  types_sample <- safe_types_sample(path, n = 1000)
+  first_col_diag <- safe_first_column_diagnostic(path)
+  
+  summary <- tibble(
+    table_name = table_name,
+    expected_role = expected_role,
+    path = path,
+    file_size_bytes = file_size,
+    md5 = md5_value,
+    n_lines_including_header = n_lines,
+    n_rows_excluding_header = n_rows_estimated,
+    n_columns = n_cols,
+    first_column = header[1],
+    first_10_columns = paste(head(header, 10), collapse = " | ")
+  )
+  
+  cat("\nResumen estructural:\n")
+  print(summary)
+  
+  cat("\nPrimeras 5 filas:\n")
+  print(preview)
+  
+  cat("\nTipos inferidos en muestra de hasta 1000 filas:\n")
+  print(types_sample)
+  
+  cat("\nDiagnóstico de primera columna:\n")
+  print(first_col_diag)
+  
+  list(
+    summary = summary,
+    preview = preview,
+    types_sample = types_sample,
+    first_col_diag = first_col_diag
+  )
+}
+
+# 1.4 Diagnosticar las cuatro tablas seleccionadas -------------------------
+
+diag_metacyc <- diagnose_table(
+  path = RXN_METACYC_FILE,
+  table_name = "rxn-cpm-metacyc.tsv",
+  expected_role = "Tabla principal MetaCyc usada para reproducir violines por categoría"
+)
+
+diag_subset <- diagnose_table(
+  path = SUBSET_GENEFAMILIES_FILE,
+  table_name = "subset_genefamilies.tsv",
+  expected_role = "Tabla HUMAnN3 de familias génicas solicitada para diagnóstico; no modifica la figura MetaCyc original"
+)
+
+diag_uniref_ko <- diagnose_table(
+  path = UNIREF_KO_FILE,
+  table_name = "uniref90_ko_reduced_long.tsv",
+  expected_role = "Mapeo UniRef90-KO solicitado para diagnóstico; no modifica la figura MetaCyc original"
+)
+
+diag_ko_name <- diagnose_table(
+  path = KO_NAME_FILE,
+  table_name = "ko_name_reduced.tsv",
+  expected_role = "Nombres de KO solicitados para diagnóstico; no modifica la figura MetaCyc original"
+)
+
+# 1.5 Diagnóstico específico del archivo MetaCyc principal -----------------
+
+metacyc_header <- read_header_fields(RXN_METACYC_FILE)
+
+metacyc_sample_cols <- metacyc_header[
+  str_detect(metacyc_header, "_Abundance")
+]
+
+metacyc_first_col <- metacyc_header[1]
+
+metacyc_header_diag <- tibble(
+  diagnostic_item = c(
+    "Primera columna",
+    "Número total de columnas",
+    "Número de columnas con patrón _Abundance",
+    "Primeras columnas con patrón _Abundance",
+    "¿Contiene columnas tipo HUMAnN3 abundance?",
+    "¿Primera columna coincide con # Gene Family?"
+  ),
+  value = c(
+    metacyc_first_col,
+    as.character(length(metacyc_header)),
+    as.character(length(metacyc_sample_cols)),
+    paste(head(metacyc_sample_cols, 10), collapse = " | "),
+    as.character(length(metacyc_sample_cols) > 0),
+    as.character(metacyc_first_col == "# Gene Family")
+  )
+)
+
+cat("\n============================================================\n")
+cat("Diagnóstico específico de rxn-cpm-metacyc.tsv\n")
+cat("============================================================\n")
+print(metacyc_header_diag)
+
+# Revisar presencia de filas no informativas que el protocolo original elimina después.
+# Esto solo cuenta, no filtra todavía.
+
+metacyc_ids <- readr::read_tsv(
+  RXN_METACYC_FILE,
+  col_select = all_of(metacyc_first_col),
+  show_col_types = FALSE,
+  progress = FALSE
+)
+
+metacyc_id_vector <- metacyc_ids[[metacyc_first_col]]
+
+metacyc_special_rows <- tibble(
+  pattern = c("UNMAPPED", "UNINTEGRATED"),
+  n_matching_rows = c(
+    sum(str_detect(metacyc_id_vector, "UNMAPPED")),
+    sum(str_detect(metacyc_id_vector, "UNINTEGRATED"))
+  )
+)
+
+cat("\nFilas especiales MetaCyc que serán consideradas en bloques posteriores:\n")
+print(metacyc_special_rows)
+
+# 1.6 Diagnóstico específico de subset_genefamilies.tsv --------------------
+
+subset_header <- read_header_fields(SUBSET_GENEFAMILIES_FILE)
+
+subset_sample_cols <- subset_header[
+  str_detect(subset_header, "_Abundance")
+]
+
+subset_first_col <- subset_header[1]
+
+subset_header_diag <- tibble(
+  diagnostic_item = c(
+    "Primera columna",
+    "Número total de columnas",
+    "Número de columnas con patrón _Abundance",
+    "Primeras columnas con patrón _Abundance",
+    "¿Primera columna coincide con Gene_Family o # Gene Family?"
+  ),
+  value = c(
+    subset_first_col,
+    as.character(length(subset_header)),
+    as.character(length(subset_sample_cols)),
+    paste(head(subset_sample_cols, 10), collapse = " | "),
+    as.character(subset_first_col %in% c("Gene_Family", "# Gene Family"))
+  )
+)
+
+cat("\n============================================================\n")
+cat("Diagnóstico específico de subset_genefamilies.tsv\n")
+cat("============================================================\n")
+print(subset_header_diag)
+
+# 1.7 Diagnóstico específico de mapeo UniRef-KO ----------------------------
+
+uniref_header <- read_header_fields(UNIREF_KO_FILE)
+
+uniref_header_diag <- tibble(
+  diagnostic_item = c(
+    "Columnas detectadas",
+    "Número total de columnas",
+    "¿Alguna columna parece UniRef?",
+    "¿Alguna columna parece KO?",
+    "Primeras 10 columnas"
+  ),
+  value = c(
+    paste(uniref_header, collapse = " | "),
+    as.character(length(uniref_header)),
+    as.character(any(str_detect(tolower(uniref_header), "uniref"))),
+    as.character(any(str_detect(tolower(uniref_header), "ko|kegg"))),
+    paste(head(uniref_header, 10), collapse = " | ")
+  )
+)
+
+cat("\n============================================================\n")
+cat("Diagnóstico específico de uniref90_ko_reduced_long.tsv\n")
+cat("============================================================\n")
+print(uniref_header_diag)
+
+# 1.8 Diagnóstico específico de nombres KO --------------------------------
+
+ko_header <- read_header_fields(KO_NAME_FILE)
+
+ko_header_diag <- tibble(
+  diagnostic_item = c(
+    "Columnas detectadas",
+    "Número total de columnas",
+    "¿Alguna columna parece KO?",
+    "¿Alguna columna parece nombre/descripción?",
+    "Primeras 10 columnas"
+  ),
+  value = c(
+    paste(ko_header, collapse = " | "),
+    as.character(length(ko_header)),
+    as.character(any(str_detect(tolower(ko_header), "ko|kegg"))),
+    as.character(any(str_detect(tolower(ko_header), "name|description|desc|definition|func"))),
+    paste(head(ko_header, 10), collapse = " | ")
+  )
+)
+
+cat("\n============================================================\n")
+cat("Diagnóstico específico de ko_name_reduced.tsv\n")
+cat("============================================================\n")
+print(ko_header_diag)
+
+# 1.9 Guardar todos los diagnósticos ---------------------------------------
+
+diagnostics_summary <- bind_rows(
+  diag_metacyc$summary,
+  diag_subset$summary,
+  diag_uniref_ko$summary,
+  diag_ko_name$summary
+)
+
+diagnostics_first_columns <- bind_rows(
+  diag_metacyc$first_col_diag %>% mutate(table_name = "rxn-cpm-metacyc.tsv"),
+  diag_subset$first_col_diag %>% mutate(table_name = "subset_genefamilies.tsv"),
+  diag_uniref_ko$first_col_diag %>% mutate(table_name = "uniref90_ko_reduced_long.tsv"),
+  diag_ko_name$first_col_diag %>% mutate(table_name = "ko_name_reduced.tsv")
+) %>%
+  relocate(table_name)
+
+diagnostics_types <- bind_rows(
+  diag_metacyc$types_sample %>% mutate(table_name = "rxn-cpm-metacyc.tsv"),
+  diag_subset$types_sample %>% mutate(table_name = "subset_genefamilies.tsv"),
+  diag_uniref_ko$types_sample %>% mutate(table_name = "uniref90_ko_reduced_long.tsv"),
+  diag_ko_name$types_sample %>% mutate(table_name = "ko_name_reduced.tsv")
+) %>%
+  relocate(table_name)
+
+readr::write_tsv(
+  diagnostics_summary,
+  file.path(PROJECT_DIR, "results", "qc", "01_tables_structural_summary.tsv")
+)
+
+readr::write_tsv(
+  diagnostics_first_columns,
+  file.path(PROJECT_DIR, "results", "qc", "01_first_column_diagnostics.tsv")
+)
+
+readr::write_tsv(
+  diagnostics_types,
+  file.path(PROJECT_DIR, "results", "qc", "01_column_types_sample_1000.tsv")
+)
+
+readr::write_tsv(
+  metacyc_header_diag,
+  file.path(PROJECT_DIR, "results", "qc", "01_metacyc_header_diagnostic.tsv")
+)
+
+readr::write_tsv(
+  metacyc_special_rows,
+  file.path(PROJECT_DIR, "results", "qc", "01_metacyc_special_rows.tsv")
+)
+
+readr::write_tsv(
+  subset_header_diag,
+  file.path(PROJECT_DIR, "results", "qc", "01_subset_genefamilies_header_diagnostic.tsv")
+)
+
+readr::write_tsv(
+  uniref_header_diag,
+  file.path(PROJECT_DIR, "results", "qc", "01_uniref_ko_header_diagnostic.tsv")
+)
+
+readr::write_tsv(
+  ko_header_diag,
+  file.path(PROJECT_DIR, "results", "qc", "01_ko_name_header_diagnostic.tsv")
+)
+
+# 1.10 Guardar objeto RDS con diagnósticos --------------------------------
+
+diag_object_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "01_input_table_diagnostics.rds"
+)
+
+saveRDS(
+  list(
+    diag_metacyc = diag_metacyc,
+    diag_subset = diag_subset,
+    diag_uniref_ko = diag_uniref_ko,
+    diag_ko_name = diag_ko_name,
+    metacyc_header_diag = metacyc_header_diag,
+    metacyc_special_rows = metacyc_special_rows,
+    subset_header_diag = subset_header_diag,
+    uniref_header_diag = uniref_header_diag,
+    ko_header_diag = ko_header_diag
+  ),
+  diag_object_file
+)
+
+log_step(
+  bloque = "Bloque 1",
+  accion = "Diagnóstico de tablas de entrada",
+  decision_tecnica = "Diagnóstico sin transformar datos; conteo de líneas con wc -l; lectura limitada para previsualización y tipos",
+  razon = "Documentar estructura de archivos grandes sin modificar el protocolo original ni cargar transformaciones prematuras.",
+  resultado = "Diagnósticos guardados en results/qc y results/objects"
+)
+
+# 1.11 Validaciones mínimas para poder avanzar -----------------------------
+
+validaciones_bloque1 <- tibble(
+  validacion = c(
+    "rxn-cpm-metacyc.tsv existe",
+    "rxn-cpm-metacyc.tsv tiene al menos 2 columnas",
+    "rxn-cpm-metacyc.tsv tiene columnas _Abundance",
+    "subset_genefamilies.tsv existe",
+    "uniref90_ko_reduced_long.tsv existe",
+    "ko_name_reduced.tsv existe"
+  ),
+  resultado = c(
+    file.exists(RXN_METACYC_FILE),
+    length(metacyc_header) >= 2,
+    length(metacyc_sample_cols) > 0,
+    file.exists(SUBSET_GENEFAMILIES_FILE),
+    file.exists(UNIREF_KO_FILE),
+    file.exists(KO_NAME_FILE)
+  )
+)
+
+readr::write_tsv(
+  validaciones_bloque1,
+  file.path(PROJECT_DIR, "results", "qc", "01_validaciones_bloque1.tsv")
+)
+
+cat("\n============================================================\n")
+cat("VALIDACIONES BLOQUE 1\n")
+cat("============================================================\n")
+print(validaciones_bloque1)
+
+if (any(!validaciones_bloque1$resultado)) {
+  stop(
+    "Una o más validaciones mínimas fallaron. Revisa la tabla VALIDACIONES BLOQUE 1 antes de continuar."
+  )
+}
+
+cat("\n============================================================\n")
+cat("BLOQUE 1 COMPLETADO\n")
+cat("============================================================\n")
+cat("Diagnósticos guardados en:\n")
+cat(file.path(PROJECT_DIR, "results", "qc"), "\n\n")
+
+cat("Objeto RDS de diagnóstico guardado en:\n")
+cat(diag_object_file, "\n\n")
+
+cat("Para avanzar necesito que me compartas:\n")
+cat("1) La tabla 'Resumen estructural' de rxn-cpm-metacyc.tsv.\n")
+cat("2) El 'Diagnóstico específico de rxn-cpm-metacyc.tsv'.\n")
+cat("3) La tabla 'VALIDACIONES BLOQUE 1'.\n")
+```
+```{r}
+# ============================================================
+# BLOQUE 2. LECTURA, LIMPIEZA ORIGINAL Y MATRIZ METACYC
+# Protocolo: Violines MetaCyc HUMAnN3
+# Modo: reproducibilidad estricta
+# ============================================================
+
+# Objetivo de este bloque:
+# 1. Leer rxn-cpm-metacyc.tsv desde la ruta seleccionada manualmente.
+# 2. Mantener la limpieza original:
+#    a) filter(!grepl("UNMAPPED|UNINTEGRATED", `# Gene Family`))
+#    b) slice(-c(1, 2))
+# 3. Renombrar columnas de muestras usando el diccionario original.
+# 4. Convertir abundancias a numérico después de eliminar filas Sample/Type.
+# 5. Construir matriz muestras × funciones.
+# 6. Crear metadatos de desierto por sufijo _CC/_VG.
+# 7. Guardar objetos, tablas diagnósticas y registrar decisiones en bitácora.
+#
+# Este bloque NO asigna categorías funcionales todavía.
+# Este bloque NO calcula estadísticos.
+# Este bloque NO grafica.
+
+# 2.1 Cargar paquetes ------------------------------------------------------
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+})
+
+# 2.2 Recuperar rutas seleccionadas ---------------------------------------
+
+BASE_DIR <- "/Users/ale/Desktop/HUMAnN3"
+PROJECT_DIR <- file.path(BASE_DIR, "MetaCyc_violins_reproducible")
+
+paths_rds_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "00B_selected_paths.rds"
+)
+
+if (!file.exists(paths_rds_file)) {
+  stop("No se encontró 00B_selected_paths.rds. Corre primero el Bloque 0B.")
+}
+
+paths <- readRDS(paths_rds_file)
+
+RXN_METACYC_FILE <- paths$RXN_METACYC_FILE
+
+log_file <- file.path(PROJECT_DIR, "results", "logs", "bitacora_automatica.tsv")
+
+log_step <- function(bloque, accion, decision_tecnica, razon, resultado = "OK") {
+  entrada <- tibble(
+    timestamp = as.character(Sys.time()),
+    bloque = bloque,
+    accion = accion,
+    decision_tecnica = decision_tecnica,
+    razon = razon,
+    resultado = resultado
+  )
+  readr::write_tsv(entrada, log_file, append = TRUE)
+}
+
+log_step(
+  bloque = "Bloque 2",
+  accion = "Inicio de limpieza MetaCyc",
+  decision_tecnica = "Leer rxn-cpm-metacyc.tsv seleccionado en Bloque 0B",
+  razon = "Este archivo es el insumo principal del protocolo original de violines MetaCyc.",
+  resultado = RXN_METACYC_FILE
+)
+
+# 2.3 Leer tabla MetaCyc cruda --------------------------------------------
+
+metacyc_raw <- readr::read_tsv(
+  RXN_METACYC_FILE,
+  show_col_types = FALSE,
+  progress = FALSE
+)
+
+cat("\nDimensiones de metacyc_raw:\n")
+print(dim(metacyc_raw))
+
+cat("\nPrimeras 3 filas de metacyc_raw:\n")
+print(head(metacyc_raw, 3))
+
+# 2.4 Validar estructura mínima -------------------------------------------
+
+if (!"# Gene Family" %in% colnames(metacyc_raw)) {
+  stop("No se encontró la columna '# Gene Family'. No se puede reproducir el protocolo original.")
+}
+
+sample_cols_original <- colnames(metacyc_raw)[-1]
+
+if (length(sample_cols_original) != 18) {
+  stop(
+    paste0(
+      "Se esperaban 18 columnas de muestras, pero se detectaron ",
+      length(sample_cols_original),
+      ". Revisa la tabla antes de continuar."
+    )
+  )
+}
+
+if (!all(str_detect(sample_cols_original, "_Abundance-RPKs$"))) {
+  stop(
+    "No todas las columnas de muestras terminan en '_Abundance-RPKs'. No se puede aplicar el renombrado original de forma segura."
+  )
+}
+
+# 2.5 Registrar filas internas Sample y Type -------------------------------
+
+internal_rows_before_cleaning <- metacyc_raw %>%
+  slice(1:2) %>%
+  select(`# Gene Family`, everything())
+
+internal_rows_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "02_internal_rows_sample_type_before_cleaning.tsv"
+)
+
+readr::write_tsv(internal_rows_before_cleaning, internal_rows_file)
+
+cat("\nFilas internas que serán eliminadas por slice(-c(1, 2)):\n")
+print(internal_rows_before_cleaning[, 1:6])
+
+log_step(
+  bloque = "Bloque 2",
+  accion = "Registro de filas internas Sample/Type",
+  decision_tecnica = "Guardar las primeras dos filas antes de eliminarlas",
+  razon = "El protocolo original elimina estas filas; se documentan para trazabilidad.",
+  resultado = internal_rows_file
+)
+
+# 2.6 Limpieza original estricta -------------------------------------------
+# Esta es la misma lógica del protocolo original:
+# 1) eliminar UNMAPPED/UNINTEGRATED
+# 2) eliminar las dos primeras filas internas: Sample y Type
+
+n_before <- nrow(metacyc_raw)
+
+n_unmapped_unintegrated <- metacyc_raw %>%
+  filter(grepl("UNMAPPED|UNINTEGRATED", `# Gene Family`)) %>%
+  nrow()
+
+metacyc_clean <- metacyc_raw %>%
+  filter(!grepl("UNMAPPED|UNINTEGRATED", `# Gene Family`)) %>%
+  slice(-c(1, 2))
+
+n_after <- nrow(metacyc_clean)
+
+cleaning_summary <- tibble(
+  step = c(
+    "Filas iniciales en metacyc_raw",
+    "Filas con UNMAPPED/UNINTEGRATED",
+    "Filas removidas por slice(-c(1, 2))",
+    "Filas finales en metacyc_clean"
+  ),
+  n_rows = c(
+    n_before,
+    n_unmapped_unintegrated,
+    2,
+    n_after
+  ),
+  reason = c(
+    "Tabla MetaCyc cruda después de leer rxn-cpm-metacyc.tsv.",
+    "Filtro original para remover funciones no informativas si estuvieran presentes.",
+    "Filas internas de HUMAnN3: Sample y Type.",
+    "Tabla limpia para matriz de abundancia."
+  )
+)
+
+cleaning_summary_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "02_cleaning_summary.tsv"
+)
+
+readr::write_tsv(cleaning_summary, cleaning_summary_file)
+
+cat("\nResumen de limpieza:\n")
+print(cleaning_summary)
+
+log_step(
+  bloque = "Bloque 2",
+  accion = "Limpieza original de tabla MetaCyc",
+  decision_tecnica = "filter(!grepl('UNMAPPED|UNINTEGRATED', `# Gene Family`)) seguido de slice(-c(1, 2))",
+  razon = "Reproducir exactamente el protocolo original sin cambiar filtros.",
+  resultado = paste0("Filas finales: ", n_after)
+)
+
+# 2.7 Renombrar muestras según diccionario original ------------------------
+
+nombres_originales <- colnames(metacyc_clean)[-1]
+
+nombres_sin_sufijo <- stringr::str_remove(
+  nombres_originales,
+  "_Abundance-RPKs$"
+)
+
+renombres <- c(
+  "A1"  = "A1_CC",  "A21" = "A2_CC",  "A22" = "A3_CC",
+  "A4"  = "B1_CC",  "A5"  = "B2_CC",  "A6"  = "B3_CC",
+  "A7"  = "C1_CC",  "A8"  = "C2_CC",  "A9"  = "C3_CC",
+  "A23" = "D1_VG",  "A11" = "D2_VG",  "A12" = "D3_VG",
+  "A13" = "E1_VG",  "A14" = "E2_VG",  "A15" = "E3_VG",
+  "A16" = "F1_VG",  "A17" = "F2_VG",  "A24" = "F3_VG"
+)
+
+nuevos_nombres <- unname(renombres[nombres_sin_sufijo])
+
+rename_table <- tibble(
+  original_column = nombres_originales,
+  sample_without_suffix = nombres_sin_sufijo,
+  renamed_sample = nuevos_nombres,
+  desert = case_when(
+    str_detect(nuevos_nombres, "_CC$") ~ "CC",
+    str_detect(nuevos_nombres, "_VG$") ~ "VG",
+    TRUE ~ NA_character_
+  )
+)
+
+rename_table_file <- file.path(
+  PROJECT_DIR,
+  "metadata",
+  "02_sample_renaming_table.tsv"
+)
+
+readr::write_tsv(rename_table, rename_table_file)
+
+cat("\nTabla de renombrado de muestras:\n")
+print(rename_table)
+
+if (any(is.na(rename_table$renamed_sample))) {
+  stop(
+    "Hay muestras sin renombrar. Revisa metadata/02_sample_renaming_table.tsv antes de continuar."
+  )
+}
+
+if (any(duplicated(rename_table$renamed_sample))) {
+  stop(
+    "Hay nombres de muestra duplicados después del renombrado. Revisa metadata/02_sample_renaming_table.tsv."
+  )
+}
+
+colnames(metacyc_clean)[-1] <- nuevos_nombres
+
+log_step(
+  bloque = "Bloque 2",
+  accion = "Renombrado de muestras",
+  decision_tecnica = "Quitar sufijo _Abundance-RPKs y aplicar diccionario original A1/A21/... hacia A1_CC/A2_CC/...",
+  razon = "Permite comparar CC vs VG y conserva los nombres biológicos usados en el protocolo original.",
+  resultado = rename_table_file
+)
+
+# 2.8 Convertir abundancias a numérico -------------------------------------
+# Se convierte después de quitar Sample y Type porque esas filas hacen que
+# read_tsv lea todas las columnas como character en rxn-cpm-metacyc.tsv.
+
+metacyc_clean_numeric <- metacyc_clean %>%
+  mutate(
+    across(
+      .cols = -`# Gene Family`,
+      .fns = ~ as.numeric(.x)
+    )
+  )
+
+numeric_na_summary <- metacyc_clean_numeric %>%
+  summarise(
+    across(
+      .cols = -`# Gene Family`,
+      .fns = ~ sum(is.na(.x))
+    )
+  ) %>%
+  pivot_longer(
+    cols = everything(),
+    names_to = "sample",
+    values_to = "n_NA_after_numeric_conversion"
+  )
+
+numeric_na_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "02_numeric_conversion_NA_summary.tsv"
+)
+
+readr::write_tsv(numeric_na_summary, numeric_na_file)
+
+cat("\nResumen de NA después de conversión numérica:\n")
+print(numeric_na_summary)
+
+if (any(numeric_na_summary$n_NA_after_numeric_conversion > 0)) {
+  stop(
+    "La conversión a numérico produjo NA en alguna muestra. Revisa results/qc/02_numeric_conversion_NA_summary.tsv."
+  )
+}
+
+log_step(
+  bloque = "Bloque 2",
+  accion = "Conversión de abundancias a numérico",
+  decision_tecnica = "mutate(across(-`# Gene Family`, as.numeric)) después de eliminar Sample/Type",
+  razon = "Las dos primeras filas internas obligaban a leer abundancias como texto; después de removerlas la conversión debe ser segura.",
+  resultado = numeric_na_file
+)
+
+# 2.9 Construir matriz muestras × funciones --------------------------------
+# Igual que el protocolo original:
+# funciones como columnas y muestras como filas.
+
+metacyc_matrix <- metacyc_clean_numeric %>%
+  column_to_rownames(var = "# Gene Family") %>%
+  t() %>%
+  as.data.frame()
+
+# Validar que todo sea numérico
+all_numeric_matrix <- all(vapply(metacyc_matrix, is.numeric, logical(1)))
+
+if (!all_numeric_matrix) {
+  stop("No todas las columnas de metacyc_matrix son numéricas.")
+}
+
+cat("\nDimensiones de metacyc_matrix:\n")
+print(dim(metacyc_matrix))
+
+cat("\nPrimeras filas y primeras columnas de metacyc_matrix:\n")
+print(metacyc_matrix[1:min(5, nrow(metacyc_matrix)), 1:min(5, ncol(metacyc_matrix))])
+
+# 2.10 Crear metadatos de muestras -----------------------------------------
+
+sample_metadata <- tibble(
+  Muestra = rownames(metacyc_matrix),
+  Desierto = case_when(
+    str_detect(Muestra, "_CC$") ~ "CC",
+    str_detect(Muestra, "_VG$") ~ "VG",
+    TRUE ~ "Desconocido"
+  ),
+  Cuadrante = str_extract(Muestra, "^[A-F]"),
+  Replicado = str_extract(Muestra, "(?<=^[A-F])\\d+"),
+  sample_order_matrix = seq_along(rownames(metacyc_matrix))
+)
+
+annot_row <- as.data.frame(sample_metadata)
+rownames(annot_row) <- annot_row$Muestra
+
+sample_metadata_file <- file.path(
+  PROJECT_DIR,
+  "metadata",
+  "02_sample_metadata.tsv"
+)
+
+readr::write_tsv(sample_metadata, sample_metadata_file)
+
+cat("\nMetadatos de muestras:\n")
+print(sample_metadata)
+
+cat("\nConteo por desierto:\n")
+
+conteo_desierto <- as.data.frame(table(sample_metadata$Desierto)) %>%
+  as_tibble() %>%
+  rename(
+    Desierto = Var1,
+    n = Freq
+  )
+
+print(conteo_desierto)
+
+if (!setequal(sample_metadata$Desierto, c("CC", "VG"))) {
+  stop("Las muestras no quedaron clasificadas exclusivamente como CC y VG.")
+}
+
+if (!all(conteo_desierto$n == 9)) {
+  stop("Se esperaban 9 muestras CC y 9 muestras VG. Revisa metadata/02_sample_metadata.tsv.")
+}
+
+log_step(
+  bloque = "Bloque 2",
+  accion = "Creación de metadatos de muestras",
+  decision_tecnica = "Asignar Desierto por sufijo _CC/_VG, cuadrante por primera letra y orden de muestra con seq_along()",
+  razon = "row_number() sin argumento puede fallar fuera de verbos dplyr; seq_along() conserva exactamente el orden de la matriz sin cambiar el protocolo.",
+  resultado = sample_metadata_file
+)
+# 2.11 Diagnóstico final del bloque ----------------------------------------
+
+block2_diagnostics <- tibble(
+  diagnostic_item = c(
+    "Dimensiones metacyc_raw",
+    "Dimensiones metacyc_clean_numeric",
+    "Dimensiones metacyc_matrix",
+    "Número de muestras CC",
+    "Número de muestras VG",
+    "Número de funciones MetaCyc",
+    "¿Todos los valores de matriz son numéricos?",
+    "¿Hay NA después de conversión numérica?",
+    "¿Hay nombres de muestra duplicados?",
+    "¿Hay funciones duplicadas?"
+  ),
+  value = c(
+    paste(dim(metacyc_raw), collapse = " x "),
+    paste(dim(metacyc_clean_numeric), collapse = " x "),
+    paste(dim(metacyc_matrix), collapse = " x "),
+    as.character(sum(sample_metadata$Desierto == "CC")),
+    as.character(sum(sample_metadata$Desierto == "VG")),
+    as.character(ncol(metacyc_matrix)),
+    as.character(all_numeric_matrix),
+    as.character(any(is.na(metacyc_matrix))),
+    as.character(any(duplicated(rownames(metacyc_matrix)))),
+    as.character(any(duplicated(colnames(metacyc_matrix))))
+  )
+)
+
+block2_diag_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "02_block2_diagnostics.tsv"
+)
+
+readr::write_tsv(block2_diagnostics, block2_diag_file)
+
+cat("\nDiagnóstico final del Bloque 2:\n")
+print(block2_diagnostics)
+
+# 2.12 Guardar tablas y objetos --------------------------------------------
+
+metacyc_clean_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "tables",
+  "02_metacyc_clean_numeric.tsv"
+)
+
+metacyc_matrix_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "tables",
+  "02_metacyc_matrix_samples_by_functions.tsv"
+)
+
+readr::write_tsv(metacyc_clean_numeric, metacyc_clean_file)
+
+metacyc_matrix_out <- metacyc_matrix %>%
+  rownames_to_column(var = "Muestra")
+
+readr::write_tsv(metacyc_matrix_out, metacyc_matrix_file)
+
+block2_objects_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "02_metacyc_clean_matrix_metadata.rds"
+)
+
+saveRDS(
+  list(
+    metacyc_raw = metacyc_raw,
+    metacyc_clean_numeric = metacyc_clean_numeric,
+    metacyc_matrix = metacyc_matrix,
+    sample_metadata = sample_metadata,
+    annot_row = annot_row,
+    rename_table = rename_table,
+    cleaning_summary = cleaning_summary,
+    numeric_na_summary = numeric_na_summary,
+    block2_diagnostics = block2_diagnostics
+  ),
+  block2_objects_file
+)
+
+log_step(
+  bloque = "Bloque 2",
+  accion = "Guardado de tablas y objetos",
+  decision_tecnica = "Guardar tabla limpia, matriz muestras × funciones y objeto RDS",
+  razon = "Permite reiniciar el protocolo desde objetos validados sin repetir lectura y limpieza.",
+  resultado = block2_objects_file
+)
+
+# 2.13 Validaciones finales ------------------------------------------------
+
+validaciones_bloque2 <- tibble(
+  validacion = c(
+    "metacyc_clean_numeric tiene 24755 filas",
+    "metacyc_clean_numeric tiene 19 columnas",
+    "metacyc_matrix tiene 18 muestras",
+    "sample_metadata tiene 18 muestras",
+    "sample_metadata tiene 9 CC",
+    "sample_metadata tiene 9 VG",
+    "No hay NA en metacyc_matrix",
+    "No hay nombres de muestra duplicados",
+    "No hay funciones duplicadas"
+  ),
+  resultado = c(
+    nrow(metacyc_clean_numeric) == 24755,
+    ncol(metacyc_clean_numeric) == 19,
+    nrow(metacyc_matrix) == 18,
+    nrow(sample_metadata) == 18,
+    sum(sample_metadata$Desierto == "CC") == 9,
+    sum(sample_metadata$Desierto == "VG") == 9,
+    !any(is.na(metacyc_matrix)),
+    !any(duplicated(rownames(metacyc_matrix))),
+    !any(duplicated(colnames(metacyc_matrix)))
+  )
+)
+
+validaciones_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "02_validaciones_bloque2.tsv"
+)
+
+readr::write_tsv(validaciones_bloque2, validaciones_file)
+
+cat("\n============================================================\n")
+cat("VALIDACIONES BLOQUE 2\n")
+cat("============================================================\n")
+print(validaciones_bloque2)
+
+if (any(!validaciones_bloque2$resultado)) {
+  stop(
+    "Una o más validaciones del Bloque 2 fallaron. Revisa results/qc/02_validaciones_bloque2.tsv antes de continuar."
+  )
+}
+
+cat("\n============================================================\n")
+cat("BLOQUE 2 COMPLETADO\n")
+cat("============================================================\n")
+cat("Tabla limpia guardada en:\n")
+cat(metacyc_clean_file, "\n\n")
+
+cat("Matriz muestras × funciones guardada en:\n")
+cat(metacyc_matrix_file, "\n\n")
+
+cat("Objeto RDS guardado en:\n")
+cat(block2_objects_file, "\n\n")
+
+cat("Para avanzar necesito que me compartas:\n")
+cat("1) Resumen de limpieza.\n")
+cat("2) Tabla de renombrado de muestras.\n")
+cat("3) Conteo por desierto.\n")
+cat("4) VALIDACIONES BLOQUE 2.\n")
+
+
+```
+```{r}
+# ============================================================
+# BLOQUE 3. CLASIFICACIÓN FUNCIONAL METACYC Y TABLA LARGA
+# Protocolo: Violines MetaCyc HUMAnN3
+# Modo: reproducibilidad estricta
+# ============================================================
+
+# Objetivo de este bloque:
+# 1. Recuperar metacyc_matrix, sample_metadata y annot_row del Bloque 2.
+# 2. Reproducir la clasificación heurística original por palabras clave.
+# 3. Construir annot_col: función MetaCyc × categoría funcional.
+# 4. Construir metacyc_long: muestra × función × abundancia × desierto × categoría.
+# 5. Calcular resumen_cat: abundancia promedio por categoría y desierto.
+# 6. Guardar tablas, objetos y diagnósticos.
+#
+# Este bloque NO calcula todavía Wilcoxon.
+# Este bloque NO ajusta p-valores.
+# Este bloque NO grafica todavía.
+#
+# Importante:
+# Se mantiene la lógica original:
+# - La categoría inicial es "Otras funciones / sin clasificar".
+# - Las coincidencias se asignan con grepl(..., ignore.case = TRUE).
+# - Si una función coincide con más de un patrón, gana la categoría asignada más tarde
+#   en el orden de la tabla, igual que en el protocolo original.
+
+# 3.1 Cargar paquetes ------------------------------------------------------
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+})
+
+# 3.2 Recuperar objetos del Bloque 2 ---------------------------------------
+
+BASE_DIR <- "/Users/ale/Desktop/HUMAnN3"
+PROJECT_DIR <- file.path(BASE_DIR, "MetaCyc_violins_reproducible")
+
+block2_objects_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "02_metacyc_clean_matrix_metadata.rds"
+)
+
+if (!file.exists(block2_objects_file)) {
+  stop(
+    paste0(
+      "No se encontró el objeto del Bloque 2:\n",
+      block2_objects_file,
+      "\nCorre el Bloque 2 completo antes de continuar."
+    )
+  )
+}
+
+block2 <- readRDS(block2_objects_file)
+
+metacyc_matrix <- block2$metacyc_matrix
+sample_metadata <- block2$sample_metadata
+annot_row <- block2$annot_row
+
+log_file <- file.path(PROJECT_DIR, "results", "logs", "bitacora_automatica.tsv")
+
+log_step <- function(bloque, accion, decision_tecnica, razon, resultado = "OK") {
+  entrada <- tibble(
+    timestamp = as.character(Sys.time()),
+    bloque = bloque,
+    accion = accion,
+    decision_tecnica = decision_tecnica,
+    razon = razon,
+    resultado = resultado
+  )
+  readr::write_tsv(entrada, log_file, append = TRUE)
+}
+
+log_step(
+  bloque = "Bloque 3",
+  accion = "Inicio de clasificación funcional MetaCyc",
+  decision_tecnica = "Recuperar matriz muestras × funciones validada en Bloque 2",
+  razon = "La clasificación por categoría se aplica sobre los nombres de funciones en las columnas de metacyc_matrix.",
+  resultado = block2_objects_file
+)
+
+# 3.3 Validaciones de entrada ----------------------------------------------
+
+if (!is.data.frame(metacyc_matrix)) {
+  stop("metacyc_matrix no es data.frame. Revisa el Bloque 2.")
+}
+
+if (nrow(metacyc_matrix) != 18) {
+  stop("metacyc_matrix no tiene 18 muestras. Revisa el Bloque 2.")
+}
+
+if (ncol(metacyc_matrix) != 24755) {
+  stop("metacyc_matrix no tiene 24,755 funciones. Revisa el Bloque 2.")
+}
+
+if (!all(vapply(metacyc_matrix, is.numeric, logical(1)))) {
+  stop("metacyc_matrix contiene columnas no numéricas. Revisa el Bloque 2.")
+}
+
+if (!all(rownames(metacyc_matrix) %in% sample_metadata$Muestra)) {
+  stop("Hay muestras de metacyc_matrix que no aparecen en sample_metadata.")
+}
+
+cat("\nDimensiones recuperadas de metacyc_matrix:\n")
+print(dim(metacyc_matrix))
+
+cat("\nPrimeras muestras:\n")
+print(head(rownames(metacyc_matrix)))
+
+cat("\nPrimeras funciones:\n")
+print(head(colnames(metacyc_matrix)))
+
+# 3.4 Tabla original de categorías y palabras clave ------------------------
+# Esta tabla conserva el orden original de asignación.
+# No se eliminan categorías manualmente.
+
+categorias <- tribble(
+  ~categoria, ~keywords,
+  "Glucólisis y metabolismo central", "glycolysis|EMP|TCA|pyruvate|gluconeogenesis",
+  "Ciclo del carbono", "Calvin|carbon[- ]fixation|rubisco|CO2 fixation",
+  "Fotosíntesis y pigmentos", "photosynthesis|chlorophyll|bacteriochlorophyll|light",
+  "Respiración y transporte de electrones", "cytochrome|oxidase|ferredoxin|menaquinone",
+  "Fermentación", "fermentation|alcohol|lactate|butyrate",
+  "Metabolismo del nitrógeno", "nitrate|nitrite|ammonium|nitrogenase",
+  "Metabolismo del azufre", "sulfate|sulfite|sulfur",
+  "Metabolismo del fósforo", "phosphate|phosphonate|phosphatase",
+  "Metabolismo del metano y C1", "methanogenesis|methane|methylamine",
+  "Aminoácidos: biosíntesis", "synthesis of arginine|leucine|lysine",
+  "Aminoácidos: degradación", "degradation of tyrosine|valine|phenylalanine",
+  "Lípidos y ácidos grasos", "fatty acid|lipid metabolism|beta[- ]oxidation",
+  "Nucleótidos", "purine|pyrimidine|adenine|guanine",
+  "Vitaminas y cofactores", "biotin|folate|cobalamin|thiamine",
+  "Polisacáridos y pared celular", "peptidoglycan|capsule|LPS|teichoic acid",
+  "Transporte y secreción", "ABC transporter|PTS system|secretion system",
+  "Señalización y quimiotaxis", "two-component|chemotaxis|quorum sensing",
+  "Estrés oxidativo y respuesta ambiental", "superoxide|catalase|heat shock",
+  "Metabolismo de compuestos aromáticos", "benzoate|phenol|catechol",
+  "Degradación de xenobióticos", "pesticide|hydrocarbon|pollutant",
+  "Metabolismo de compuestos secundarios", "siderophore|terpene|polyketide",
+  "Biofilm y adhesión", "adhesin|pili|biofilm|EPS",
+  "Protección UV", "UV|pigment|carotenoid|crt|phz|mel|mycosporine|sunscreen",
+  "Movilidad celular", "flagellum|motility|chemotaxis"
+)
+
+categorias_file <- file.path(
+  PROJECT_DIR,
+  "metadata",
+  "03_categorias_keywords_original.tsv"
+)
+
+readr::write_tsv(categorias, categorias_file)
+
+cat("\nTabla de categorías y palabras clave:\n")
+print(categorias)
+
+log_step(
+  bloque = "Bloque 3",
+  accion = "Definición de categorías funcionales",
+  decision_tecnica = "Usar tabla de palabras clave del protocolo original",
+  razon = "Reproducir la asignación heurística de funciones MetaCyc a categorías ecológico-funcionales.",
+  resultado = categorias_file
+)
+
+# 3.5 Asignar categoría a cada función -------------------------------------
+# Reproducción estricta de la lógica original.
+
+funciones <- colnames(metacyc_matrix)
+
+categorias_vector <- rep(
+  "Otras funciones / sin clasificar",
+  length(funciones)
+)
+
+match_registry <- vector("list", nrow(categorias))
+
+for (i in seq_len(nrow(categorias))) {
+  patron <- categorias$keywords[i]
+  categoria_actual <- categorias$categoria[i]
+  
+  coincidencias <- grepl(
+    pattern = patron,
+    x = funciones,
+    ignore.case = TRUE
+  )
+  
+  categorias_vector[coincidencias] <- categoria_actual
+  
+  match_registry[[i]] <- tibble(
+    order = i,
+    categoria = categoria_actual,
+    keywords = patron,
+    n_matches_before_overwrite_logic = sum(coincidencias)
+  )
+}
+
+match_registry <- bind_rows(match_registry)
+
+annot_col <- data.frame(
+  Categoría = categorias_vector,
+  stringsAsFactors = FALSE
+)
+
+rownames(annot_col) <- funciones
+
+# 3.6 Diagnósticos de categorías -------------------------------------------
+
+category_counts <- as.data.frame(table(annot_col$Categoría)) %>%
+  as_tibble() %>%
+  rename(
+    Categoría = Var1,
+    n_funciones = Freq
+  ) %>%
+  arrange(desc(n_funciones), Categoría)
+
+category_presence_all_patterns <- categorias %>%
+  rename(Categoría = categoria) %>%
+  left_join(category_counts, by = "Categoría") %>%
+  mutate(
+    n_funciones = replace_na(n_funciones, 0L),
+    aparece_en_annot_col = n_funciones > 0
+  )
+
+otras_count <- category_counts %>%
+  filter(Categoría == "Otras funciones / sin clasificar") %>%
+  pull(n_funciones)
+
+if (length(otras_count) == 0) {
+  otras_count <- 0
+}
+
+block3_diagnostics <- tibble(
+  diagnostic_item = c(
+    "Número total de funciones clasificadas",
+    "Número de categorías observadas en annot_col",
+    "Número de categorías definidas por palabras clave",
+    "Número de funciones en Otras funciones / sin clasificar",
+    "¿Todas las funciones recibieron una categoría?",
+    "¿annot_col tiene una fila por función?",
+    "¿rownames(annot_col) coinciden con colnames(metacyc_matrix)?"
+  ),
+  value = c(
+    as.character(length(funciones)),
+    as.character(nrow(category_counts)),
+    as.character(nrow(categorias)),
+    as.character(otras_count),
+    as.character(all(!is.na(annot_col$Categoría))),
+    as.character(nrow(annot_col) == ncol(metacyc_matrix)),
+    as.character(identical(rownames(annot_col), colnames(metacyc_matrix)))
+  )
+)
+
+cat("\nConteo de funciones por categoría observada:\n")
+print(category_counts)
+
+cat("\nCategorías definidas y presencia observada:\n")
+print(category_presence_all_patterns)
+
+cat("\nDiagnóstico del Bloque 3:\n")
+print(block3_diagnostics)
+
+# 3.7 Construir tabla larga del protocolo original -------------------------
+# Esta es la tabla que después alimenta:
+# - resumen_cat
+# - Wilcoxon por categoría
+# - figura de violines
+
+# annot_row ya contiene una columna llamada Muestra.
+# Por eso NO usamos rownames_to_column("Muestra"), para evitar duplicados.
+
+annot_row_for_join <- annot_row %>%
+  as.data.frame() %>%
+  dplyr::select(Muestra, Desierto)
+
+metacyc_long <- metacyc_matrix %>%
+  rownames_to_column("Muestra") %>%
+  pivot_longer(
+    cols = -Muestra,
+    names_to = "Funcion",
+    values_to = "Abundancia"
+  ) %>%
+  left_join(
+    annot_row_for_join,
+    by = "Muestra"
+  ) %>%
+  left_join(
+    annot_col %>%
+      as.data.frame() %>%
+      rownames_to_column("Funcion"),
+    by = "Funcion"
+  )
+
+cat("\nDimensiones de metacyc_long:\n")
+print(dim(metacyc_long))
+
+cat("\nPrimeras filas de metacyc_long:\n")
+print(head(metacyc_long))
+# 3.8 Validar metacyc_long -------------------------------------------------
+
+metacyc_long_diagnostics <- tibble(
+  diagnostic_item = c(
+    "Filas esperadas en metacyc_long: 18 * 24755",
+    "Filas observadas en metacyc_long",
+    "Columnas observadas en metacyc_long",
+    "¿Hay NA en Muestra?",
+    "¿Hay NA en Funcion?",
+    "¿Hay NA en Abundancia?",
+    "¿Hay NA en Desierto?",
+    "¿Hay NA en Categoría?",
+    "Número de categorías en metacyc_long",
+    "Número de muestras en metacyc_long",
+    "Número de funciones en metacyc_long"
+  ),
+  value = c(
+    as.character(18 * 24755),
+    as.character(nrow(metacyc_long)),
+    as.character(ncol(metacyc_long)),
+    as.character(any(is.na(metacyc_long$Muestra))),
+    as.character(any(is.na(metacyc_long$Funcion))),
+    as.character(any(is.na(metacyc_long$Abundancia))),
+    as.character(any(is.na(metacyc_long$Desierto))),
+    as.character(any(is.na(metacyc_long$Categoría))),
+    as.character(length(unique(metacyc_long$Categoría))),
+    as.character(length(unique(metacyc_long$Muestra))),
+    as.character(length(unique(metacyc_long$Funcion)))
+  )
+)
+
+cat("\nDiagnóstico de metacyc_long:\n")
+print(metacyc_long_diagnostics)
+
+# 3.9 Calcular resumen_cat original ----------------------------------------
+# Promedio de abundancia por categoría funcional y desierto.
+# Esto reproduce el objeto usado después para tablas y gráficas auxiliares.
+
+resumen_cat <- metacyc_long %>%
+  group_by(Categoría, Desierto) %>%
+  summarise(
+    AbundanciaPromedio = mean(Abundancia, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+cat("\nResumen de abundancia promedio por categoría y desierto:\n")
+print(resumen_cat)
+
+# 3.10 Guardar tablas ------------------------------------------------------
+
+annot_col_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "tables",
+  "03_annot_col_function_categories.tsv"
+)
+
+category_counts_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "03_category_counts.tsv"
+)
+
+category_presence_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "03_category_presence_all_patterns.tsv"
+)
+
+match_registry_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "03_keyword_match_registry.tsv"
+)
+
+metacyc_long_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "tables",
+  "03_metacyc_long.tsv"
+)
+
+resumen_cat_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "tables",
+  "03_resumen_cat_abundancia_promedio.tsv"
+)
+
+block3_diag_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "03_block3_diagnostics.tsv"
+)
+
+metacyc_long_diag_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "03_metacyc_long_diagnostics.tsv"
+)
+
+annot_col_out <- annot_col %>%
+  as.data.frame() %>%
+  rownames_to_column("Funcion")
+
+readr::write_tsv(annot_col_out, annot_col_file)
+readr::write_tsv(category_counts, category_counts_file)
+readr::write_tsv(category_presence_all_patterns, category_presence_file)
+readr::write_tsv(match_registry, match_registry_file)
+readr::write_tsv(metacyc_long, metacyc_long_file)
+readr::write_tsv(resumen_cat, resumen_cat_file)
+readr::write_tsv(block3_diagnostics, block3_diag_file)
+readr::write_tsv(metacyc_long_diagnostics, metacyc_long_diag_file)
+
+# 3.11 Guardar objeto RDS --------------------------------------------------
+
+block3_objects_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "03_metacyc_categories_long_summary.rds"
+)
+
+saveRDS(
+  list(
+    categorias = categorias,
+    annot_col = annot_col,
+    category_counts = category_counts,
+    category_presence_all_patterns = category_presence_all_patterns,
+    match_registry = match_registry,
+    metacyc_long = metacyc_long,
+    resumen_cat = resumen_cat,
+    block3_diagnostics = block3_diagnostics,
+    metacyc_long_diagnostics = metacyc_long_diagnostics
+  ),
+  block3_objects_file
+)
+
+log_step(
+  bloque = "Bloque 3",
+  accion = "Clasificación funcional y construcción de tabla larga",
+  decision_tecnica = "Asignar categorías con grepl por palabras clave y construir metacyc_long con pivot_longer + left_join",
+  razon = "Este es el objeto base para estadísticos y violines del protocolo original.",
+  resultado = block3_objects_file
+)
+
+# 3.12 Validaciones finales ------------------------------------------------
+
+validaciones_bloque3 <- tibble(
+  validacion = c(
+    "annot_col tiene una fila por función",
+    "rownames(annot_col) coinciden con colnames(metacyc_matrix)",
+    "metacyc_long tiene 445590 filas",
+    "metacyc_long tiene 18 muestras",
+    "metacyc_long tiene 24755 funciones",
+    "metacyc_long no tiene NA en Abundancia",
+    "metacyc_long no tiene NA en Desierto",
+    "metacyc_long no tiene NA en Categoría",
+    "resumen_cat tiene dos desiertos por categoría observada"
+  ),
+  resultado = c(
+    nrow(annot_col) == ncol(metacyc_matrix),
+    identical(rownames(annot_col), colnames(metacyc_matrix)),
+    nrow(metacyc_long) == 18 * 24755,
+    length(unique(metacyc_long$Muestra)) == 18,
+    length(unique(metacyc_long$Funcion)) == 24755,
+    !any(is.na(metacyc_long$Abundancia)),
+    !any(is.na(metacyc_long$Desierto)),
+    !any(is.na(metacyc_long$Categoría)),
+    all(as.data.frame(table(resumen_cat$Categoría))$Freq == 2)
+  )
+)
+
+validaciones_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "03_validaciones_bloque3.tsv"
+)
+
+readr::write_tsv(validaciones_bloque3, validaciones_file)
+
+cat("\n============================================================\n")
+cat("VALIDACIONES BLOQUE 3\n")
+cat("============================================================\n")
+print(validaciones_bloque3)
+
+if (any(!validaciones_bloque3$resultado)) {
+  stop(
+    "Una o más validaciones del Bloque 3 fallaron. Revisa results/qc/03_validaciones_bloque3.tsv antes de continuar."
+  )
+}
+
+cat("\n============================================================\n")
+cat("BLOQUE 3 COMPLETADO\n")
+cat("============================================================\n")
+cat("Categorías guardadas en:\n")
+cat(categorias_file, "\n\n")
+
+cat("annot_col guardado en:\n")
+cat(annot_col_file, "\n\n")
+
+cat("metacyc_long guardado en:\n")
+cat(metacyc_long_file, "\n\n")
+
+cat("resumen_cat guardado en:\n")
+cat(resumen_cat_file, "\n\n")
+
+cat("Objeto RDS guardado en:\n")
+cat(block3_objects_file, "\n\n")
+
+cat("Para avanzar necesito que me compartas:\n")
+cat("1) Conteo de funciones por categoría observada.\n")
+cat("2) Diagnóstico de metacyc_long.\n")
+cat("3) VALIDACIONES BLOQUE 3.\n")
+```
+
+```{r}
+# ============================================================
+# BLOQUE 4. ESTADÍSTICOS POR CATEGORÍA FUNCIONAL METACYC
+# Protocolo: Violines MetaCyc HUMAnN3
+# Modo: reproducibilidad estricta
+# ============================================================
+
+# Objetivo de este bloque:
+# 1. Recuperar metacyc_long del Bloque 3.
+# 2. Reproducir el análisis estadístico original:
+#    - Wilcoxon rank-sum test por categoría funcional.
+#    - Ajuste de p-valores por Benjamini-Hochberg.
+#    - Marcado de significancia con p.adj < 0.05.
+# 3. Construir tabla interpretativa:
+#    - Abundancia promedio en CC.
+#    - Abundancia promedio en VG.
+#    - Diferencia CC - VG.
+#    - Diferencia relativa (%).
+#    - Desierto dominante.
+#    - p ajustado.
+#    - Significancia.
+# 4. Guardar tablas, diagnósticos, objeto RDS y bitácora.
+#
+# Importante:
+# Este bloque NO cambia la unidad de abundancia.
+# Este bloque NO agrega pseudoconteos.
+# Este bloque NO resume por muestra antes del Wilcoxon.
+# Se mantiene la lógica original: Wilcoxon sobre Abundancia ~ Desierto
+# dentro de cada categoría funcional.
+
+# 4.1 Cargar paquetes ------------------------------------------------------
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(rstatix)
+})
+
+# 4.2 Recuperar objetos del Bloque 3 ---------------------------------------
+
+BASE_DIR <- "/Users/ale/Desktop/HUMAnN3"
+PROJECT_DIR <- file.path(BASE_DIR, "MetaCyc_violins_reproducible")
+
+block3_objects_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "03_metacyc_categories_long_summary.rds"
+)
+
+if (!file.exists(block3_objects_file)) {
+  stop(
+    paste0(
+      "No se encontró el objeto del Bloque 3:\n",
+      block3_objects_file,
+      "\nCorre el Bloque 3 completo antes de continuar."
+    )
+  )
+}
+
+block3 <- readRDS(block3_objects_file)
+
+metacyc_long <- block3$metacyc_long
+resumen_cat <- block3$resumen_cat
+category_counts <- block3$category_counts
+
+log_file <- file.path(PROJECT_DIR, "results", "logs", "bitacora_automatica.tsv")
+
+log_step <- function(bloque, accion, decision_tecnica, razon, resultado = "OK") {
+  entrada <- tibble(
+    timestamp = as.character(Sys.time()),
+    bloque = bloque,
+    accion = accion,
+    decision_tecnica = decision_tecnica,
+    razon = razon,
+    resultado = resultado
+  )
+  readr::write_tsv(entrada, log_file, append = TRUE)
+}
+
+log_step(
+  bloque = "Bloque 4",
+  accion = "Inicio de análisis estadístico por categoría",
+  decision_tecnica = "Usar metacyc_long generado en Bloque 3",
+  razon = "El protocolo original calcula Wilcoxon por categoría a partir de metacyc_long.",
+  resultado = block3_objects_file
+)
+
+# 4.3 Validaciones de entrada ----------------------------------------------
+
+required_cols <- c("Muestra", "Funcion", "Abundancia", "Desierto", "Categoría")
+
+missing_cols <- setdiff(required_cols, colnames(metacyc_long))
+
+if (length(missing_cols) > 0) {
+  stop(
+    paste0(
+      "Faltan columnas necesarias en metacyc_long: ",
+      paste(missing_cols, collapse = ", ")
+    )
+  )
+}
+
+if (!is.numeric(metacyc_long$Abundancia)) {
+  stop("La columna Abundancia no es numérica.")
+}
+
+if (!setequal(unique(metacyc_long$Desierto), c("CC", "VG"))) {
+  stop("La columna Desierto no contiene exclusivamente CC y VG.")
+}
+
+if (any(is.na(metacyc_long$Abundancia))) {
+  stop("Hay NA en Abundancia. Revisa Bloques 2 y 3.")
+}
+
+if (any(is.na(metacyc_long$Categoría))) {
+  stop("Hay NA en Categoría. Revisa Bloque 3.")
+}
+
+cat("\nDimensiones de metacyc_long recuperado:\n")
+print(dim(metacyc_long))
+
+cat("\nCategorías observadas:\n")
+print(sort(unique(metacyc_long$Categoría)))
+
+# 4.4 Diagnóstico previo por categoría y desierto --------------------------
+
+diagnostico_n_por_categoria <- metacyc_long %>%
+  dplyr::group_by(Categoría, Desierto) %>%
+  dplyr::summarise(
+    n_observaciones = dplyr::n(),
+    n_funciones_unicas = dplyr::n_distinct(Funcion),
+    n_muestras_unicas = dplyr::n_distinct(Muestra),
+    n_ceros = sum(Abundancia == 0, na.rm = TRUE),
+    proporcion_ceros = n_ceros / n_observaciones,
+    abundancia_media = mean(Abundancia, na.rm = TRUE),
+    abundancia_mediana = median(Abundancia, na.rm = TRUE),
+    abundancia_min = min(Abundancia, na.rm = TRUE),
+    abundancia_max = max(Abundancia, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+diagnostico_n_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "04_diagnostico_n_por_categoria_desierto.tsv"
+)
+
+readr::write_tsv(diagnostico_n_por_categoria, diagnostico_n_file)
+
+cat("\nDiagnóstico previo por categoría y desierto:\n")
+print(diagnostico_n_por_categoria)
+
+log_step(
+  bloque = "Bloque 4",
+  accion = "Diagnóstico previo a Wilcoxon",
+  decision_tecnica = "Contar observaciones, funciones, muestras y ceros por categoría y desierto",
+  razon = "Documentar la estructura real de los datos usados por la prueba no paramétrica.",
+  resultado = diagnostico_n_file
+)
+
+# 4.5 Wilcoxon por categoría ------------------------------------------------
+# Reproducción del protocolo original:
+# metacyc_long %>%
+#   group_by(Categoría) %>%
+#   wilcox_test(Abundancia ~ Desierto) %>%
+#   adjust_pvalue(method = "BH") %>%
+#   mutate(significativo = if_else(p.adj < 0.05, "Sí", "No"))
+
+test_resultados <- metacyc_long %>%
+  dplyr::group_by(Categoría) %>%
+  rstatix::wilcox_test(Abundancia ~ Desierto) %>%
+  rstatix::adjust_pvalue(method = "BH") %>%
+  dplyr::mutate(
+    significativo = dplyr::if_else(p.adj < 0.05, "Sí", "No"),
+    Significancia = dplyr::case_when(
+      p.adj <= 0.001 ~ "***",
+      p.adj <= 0.01  ~ "**",
+      p.adj <= 0.05  ~ "*",
+      TRUE ~ "ns"
+    )
+  )
+
+cat("\nResultados Wilcoxon + FDR-BH:\n")
+print(test_resultados)
+
+# 4.6 Tabla de abundancia promedio y dominancia ----------------------------
+
+tabla_abundancia <- metacyc_long %>%
+  dplyr::group_by(Categoría, Desierto) %>%
+  dplyr::summarise(
+    AbundanciaPromedio = mean(Abundancia, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  tidyr::pivot_wider(
+    names_from = Desierto,
+    values_from = AbundanciaPromedio
+  ) %>%
+  dplyr::mutate(
+    `Δ Abundancia (CC - VG)` = CC - VG,
+    `Diferencia relativa (%)` = (CC - VG) / ((CC + VG) / 2) * 100,
+    `Desierto dominante` = dplyr::case_when(
+      CC > VG ~ "CC",
+      VG > CC ~ "VG",
+      TRUE ~ "Similar"
+    )
+  )
+
+tabla_stats <- test_resultados %>%
+  dplyr::rename(p_valor = p.adj) %>%
+  dplyr::select(
+    Categoría,
+    p,
+    p_valor,
+    Significancia,
+    significativo,
+    statistic,
+    group1,
+    group2,
+    n1,
+    n2
+  )
+
+tabla_final <- tabla_abundancia %>%
+  dplyr::left_join(tabla_stats, by = "Categoría") %>%
+  dplyr::select(
+    Categoría,
+    CC,
+    VG,
+    `Δ Abundancia (CC - VG)`,
+    `Diferencia relativa (%)`,
+    `Desierto dominante`,
+    p,
+    p_valor,
+    Significancia,
+    significativo,
+    statistic,
+    group1,
+    group2,
+    n1,
+    n2
+  ) %>%
+  dplyr::arrange(p_valor, Categoría)
+
+cat("\nTabla final de comparación funcional:\n")
+print(tabla_final)
+
+# 4.7 Diagnóstico estadístico final ----------------------------------------
+
+stats_diagnostics <- tibble(
+  diagnostic_item = c(
+    "Número de categorías evaluadas por Wilcoxon",
+    "Número de categorías significativas con p.adj < 0.05",
+    "Número de categorías no significativas",
+    "Método de prueba",
+    "Método de ajuste de p-valores",
+    "Variable respuesta",
+    "Variable agrupadora",
+    "¿Todas las categorías tienen p ajustado?",
+    "¿Todas las categorías tienen Significancia?",
+    "¿group1 es CC en todas las pruebas?",
+    "¿group2 es VG en todas las pruebas?"
+  ),
+  value = c(
+    as.character(nrow(test_resultados)),
+    as.character(sum(test_resultados$p.adj < 0.05, na.rm = TRUE)),
+    as.character(sum(test_resultados$p.adj >= 0.05, na.rm = TRUE)),
+    "Wilcoxon rank-sum test",
+    "Benjamini-Hochberg FDR",
+    "Abundancia",
+    "Desierto",
+    as.character(!any(is.na(test_resultados$p.adj))),
+    as.character(!any(is.na(test_resultados$Significancia))),
+    as.character(all(test_resultados$group1 == "CC")),
+    as.character(all(test_resultados$group2 == "VG"))
+  )
+)
+
+cat("\nDiagnóstico estadístico final:\n")
+print(stats_diagnostics)
+
+# 4.8 Guardar tablas -------------------------------------------------------
+
+test_resultados_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "statistics",
+  "04_wilcoxon_by_category_BH.tsv"
+)
+
+tabla_abundancia_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "tables",
+  "04_tabla_abundancia_promedio_CC_VG.tsv"
+)
+
+tabla_final_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "tables",
+  "04_tabla_final_comparacion_funcional.tsv"
+)
+
+stats_diagnostics_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "04_stats_diagnostics.tsv"
+)
+
+readr::write_tsv(test_resultados, test_resultados_file)
+readr::write_tsv(tabla_abundancia, tabla_abundancia_file)
+readr::write_tsv(tabla_final, tabla_final_file)
+readr::write_tsv(stats_diagnostics, stats_diagnostics_file)
+
+# 4.9 Guardar objeto RDS ---------------------------------------------------
+
+block4_objects_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "04_metacyc_statistics_tables.rds"
+)
+
+saveRDS(
+  list(
+    diagnostico_n_por_categoria = diagnostico_n_por_categoria,
+    test_resultados = test_resultados,
+    tabla_abundancia = tabla_abundancia,
+    tabla_stats = tabla_stats,
+    tabla_final = tabla_final,
+    stats_diagnostics = stats_diagnostics
+  ),
+  block4_objects_file
+)
+
+log_step(
+  bloque = "Bloque 4",
+  accion = "Cálculo de Wilcoxon y tabla final",
+  decision_tecnica = "wilcox_test(Abundancia ~ Desierto) por Categoría; adjust_pvalue(method = 'BH'); significancia con p.adj",
+  razon = "Reproducir el protocolo original sin cambiar prueba estadística ni corrección por comparaciones múltiples.",
+  resultado = block4_objects_file
+)
+
+# 4.10 Validaciones finales ------------------------------------------------
+
+validaciones_bloque4 <- tibble(
+  validacion = c(
+    "test_resultados tiene 18 categorías",
+    "tabla_final tiene 18 categorías",
+    "No hay NA en p_valor",
+    "No hay NA en Significancia",
+    "Todas las categorías de tabla_final están en test_resultados",
+    "Todas las categorías tienen CC y VG",
+    "group1 es CC en todas las pruebas",
+    "group2 es VG en todas las pruebas"
+  ),
+  resultado = c(
+    nrow(test_resultados) == 18,
+    nrow(tabla_final) == 18,
+    !any(is.na(tabla_final$p_valor)),
+    !any(is.na(tabla_final$Significancia)),
+    setequal(tabla_final$Categoría, test_resultados$Categoría),
+    all(!is.na(tabla_final$CC)) && all(!is.na(tabla_final$VG)),
+    all(test_resultados$group1 == "CC"),
+    all(test_resultados$group2 == "VG")
+  )
+)
+
+validaciones_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "04_validaciones_bloque4.tsv"
+)
+
+readr::write_tsv(validaciones_bloque4, validaciones_file)
+
+cat("\n============================================================\n")
+cat("VALIDACIONES BLOQUE 4\n")
+cat("============================================================\n")
+print(validaciones_bloque4)
+
+if (any(!validaciones_bloque4$resultado)) {
+  stop(
+    "Una o más validaciones del Bloque 4 fallaron. Revisa results/qc/04_validaciones_bloque4.tsv antes de continuar."
+  )
+}
+
+cat("\n============================================================\n")
+cat("BLOQUE 4 COMPLETADO\n")
+cat("============================================================\n")
+cat("Resultados Wilcoxon + BH guardados en:\n")
+cat(test_resultados_file, "\n\n")
+
+cat("Tabla final guardada en:\n")
+cat(tabla_final_file, "\n\n")
+
+cat("Objeto RDS guardado en:\n")
+cat(block4_objects_file, "\n\n")
+
+cat("Para avanzar necesito que me compartas:\n")
+cat("1) Resultados Wilcoxon + FDR-BH.\n")
+cat("2) Tabla final de comparación funcional.\n")
+cat("3) VALIDACIONES BLOQUE 4.\n")
+```
+```{r}
+# ============================================================
+# BLOQUE 5. FIGURA DE VIOLINES METACYC EN ESPAÑOL
+# Protocolo: Violines MetaCyc HUMAnN3
+# Modo: reproducibilidad estricta
+# ============================================================
+
+# Objetivo de este bloque:
+# 1. Recuperar metacyc_long del Bloque 3 y estadísticos del Bloque 4.
+# 2. Generar la figura de violines en español como la versión original:
+#    - Eje Y en escala log10.
+#    - Facetas por categoría funcional.
+#    - Escalas libres en Y por categoría.
+#    - Colores CC y VG.
+#    - Boxplot interno.
+#    - Asterisco en el título de faceta si p.adj < 0.05.
+# 3. Guardar JPG, PNG y PDF.
+#
+# Importante:
+# - No se modifican pruebas estadísticas.
+# - No se recalculan p-valores.
+# - No se agregan pseudoconteos.
+# - Para graficar en escala log10, los ceros no se muestran porque log10(0)
+#   no está definido. Esto afecta solo la visualización, no la estadística.
+
+# 5.1 Cargar paquetes ------------------------------------------------------
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(ggplot2)
+  library(scales)
+})
+
+# 5.2 Recuperar objetos previos --------------------------------------------
+
+BASE_DIR <- "/Users/ale/Desktop/HUMAnN3"
+PROJECT_DIR <- file.path(BASE_DIR, "MetaCyc_violins_reproducible")
+
+block3_objects_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "03_metacyc_categories_long_summary.rds"
+)
+
+block4_objects_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "04_metacyc_statistics_tables.rds"
+)
+
+if (!file.exists(block3_objects_file)) {
+  stop("No se encontró el objeto del Bloque 3. Corre el Bloque 3 antes de continuar.")
+}
+
+if (!file.exists(block4_objects_file)) {
+  stop("No se encontró el objeto del Bloque 4. Corre el Bloque 4 antes de continuar.")
+}
+
+block3 <- readRDS(block3_objects_file)
+block4 <- readRDS(block4_objects_file)
+
+metacyc_long <- block3$metacyc_long
+test_resultados <- block4$test_resultados
+tabla_final <- block4$tabla_final
+
+log_file <- file.path(PROJECT_DIR, "results", "logs", "bitacora_automatica.tsv")
+
+log_step <- function(bloque, accion, decision_tecnica, razon, resultado = "OK") {
+  entrada <- tibble(
+    timestamp = as.character(Sys.time()),
+    bloque = bloque,
+    accion = accion,
+    decision_tecnica = decision_tecnica,
+    razon = razon,
+    resultado = resultado
+  )
+  readr::write_tsv(entrada, log_file, append = TRUE)
+}
+
+log_step(
+  bloque = "Bloque 5",
+  accion = "Inicio de figura de violines en español",
+  decision_tecnica = "Usar metacyc_long del Bloque 3 y p.adj del Bloque 4",
+  razon = "La figura original usa abundancias MetaCyc por categoría y marca significancia por categoría.",
+  resultado = "Objetos recuperados correctamente"
+)
+
+# 5.3 Validaciones de entrada ----------------------------------------------
+
+required_cols_long <- c("Muestra", "Funcion", "Abundancia", "Desierto", "Categoría")
+required_cols_stats <- c("Categoría", "p.adj", "Significancia")
+
+if (!all(required_cols_long %in% colnames(metacyc_long))) {
+  stop("metacyc_long no contiene todas las columnas necesarias.")
+}
+
+if (!all(required_cols_stats %in% colnames(test_resultados))) {
+  stop("test_resultados no contiene Categoría, p.adj y Significancia.")
+}
+
+if (!setequal(unique(metacyc_long$Desierto), c("CC", "VG"))) {
+  stop("La columna Desierto debe contener exclusivamente CC y VG.")
+}
+
+if (nrow(test_resultados) != 18) {
+  stop("test_resultados no tiene 18 categorías. Revisa el Bloque 4.")
+}
+
+# 5.4 Orden de categorías como en la figura original -----------------------
+
+orden_categorias_es <- c(
+  "Metabolismo del azufre",
+  "Estrés oxidativo y respuesta ambiental",
+  "Aminoácidos: degradación",
+  "Metabolismo del fósforo",
+  "Otras funciones / sin clasificar",
+  "Protección UV",
+  "Aminoácidos: biosíntesis",
+  "Nucleótidos",
+  "Biofilm y adhesión",
+  "Respiración y transporte de electrones",
+  "Polisacáridos y pared celular",
+  "Fermentación",
+  "Vitaminas y cofactores",
+  "Metabolismo del nitrógeno",
+  "Metabolismo de compuestos aromáticos",
+  "Fotosíntesis y pigmentos",
+  "Metabolismo del metano y C1",
+  "Glucólisis y metabolismo central"
+)
+
+categorias_observadas <- sort(unique(metacyc_long$Categoría))
+
+categorias_faltantes_en_datos <- setdiff(orden_categorias_es, categorias_observadas)
+categorias_extra_en_datos <- setdiff(categorias_observadas, orden_categorias_es)
+
+if (length(categorias_faltantes_en_datos) > 0) {
+  stop(
+    paste0(
+      "Estas categorías del orden esperado no están en metacyc_long: ",
+      paste(categorias_faltantes_en_datos, collapse = ", ")
+    )
+  )
+}
+
+if (length(categorias_extra_en_datos) > 0) {
+  stop(
+    paste0(
+      "Estas categorías están en metacyc_long pero no en el orden definido: ",
+      paste(categorias_extra_en_datos, collapse = ", ")
+    )
+  )
+}
+
+# 5.5 Crear etiquetas de faceta con asterisco ------------------------------
+
+facet_labels_es <- test_resultados %>%
+  dplyr::mutate(
+    etiqueta_facet = dplyr::if_else(
+      p.adj < 0.05,
+      paste0(Categoría, " *"),
+      Categoría
+    )
+  ) %>%
+  dplyr::select(Categoría, etiqueta_facet)
+
+facet_labeller_es <- setNames(
+  facet_labels_es$etiqueta_facet,
+  facet_labels_es$Categoría
+)
+
+facet_labels_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "tables",
+  "05_facet_labels_spanish.tsv"
+)
+
+readr::write_tsv(facet_labels_es, facet_labels_file)
+
+# 5.6 Preparar datos de visualización --------------------------------------
+# Los ceros se excluyen solo para la visualización log10.
+# No se altera metacyc_long ni los estadísticos del Bloque 4.
+
+plot_data_es <- metacyc_long %>%
+  dplyr::filter(Abundancia > 0) %>%
+  dplyr::mutate(
+    Categoría = factor(Categoría, levels = orden_categorias_es),
+    Desierto = factor(Desierto, levels = c("CC", "VG"))
+  )
+
+plot_data_diagnostics <- tibble(
+  diagnostic_item = c(
+    "Filas en metacyc_long original",
+    "Filas usadas para plot log10",
+    "Filas con Abundancia == 0 excluidas solo del plot",
+    "Número de categorías en plot",
+    "Número de muestras en plot",
+    "Mínimo positivo de Abundancia",
+    "Máximo de Abundancia"
+  ),
+  value = c(
+    as.character(nrow(metacyc_long)),
+    as.character(nrow(plot_data_es)),
+    as.character(sum(metacyc_long$Abundancia == 0, na.rm = TRUE)),
+    as.character(length(unique(plot_data_es$Categoría))),
+    as.character(length(unique(plot_data_es$Muestra))),
+    as.character(min(plot_data_es$Abundancia, na.rm = TRUE)),
+    as.character(max(plot_data_es$Abundancia, na.rm = TRUE))
+  )
+)
+
+plot_data_diag_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "05_plot_data_diagnostics_spanish.tsv"
+)
+
+readr::write_tsv(plot_data_diagnostics, plot_data_diag_file)
+
+cat("\nDiagnóstico de datos usados para la figura:\n")
+print(plot_data_diagnostics)
+
+log_step(
+  bloque = "Bloque 5",
+  accion = "Preparación de datos para escala log10",
+  decision_tecnica = "Filtrar Abundancia > 0 solo para visualización",
+  razon = "log10(0) no está definido; los estadísticos ya fueron calculados sobre metacyc_long completo.",
+  resultado = plot_data_diag_file
+)
+
+# 5.7 Crear figura de violines en español ----------------------------------
+
+colores_desierto <- c(
+  "CC" = "#F8766D",
+  "VG" = "#00BFC4"
+)
+
+fig_violin_es <- ggplot(
+  plot_data_es,
+  aes(
+    x = Desierto,
+    y = Abundancia,
+    fill = Desierto
+  )
+) +
+  geom_violin(
+    trim = FALSE,
+    alpha = 0.65,
+    color = NA
+  ) +
+  geom_boxplot(
+    width = 0.12,
+    outlier.shape = NA,
+    alpha = 0.85,
+    color = "gray20",
+    fill = NA,
+    linewidth = 0.6
+  ) +
+  scale_y_log10(
+    labels = function(x) format(x, scientific = FALSE, trim = TRUE)
+  ) +
+  scale_fill_manual(
+    values = colores_desierto
+  ) +
+  facet_wrap(
+    ~ Categoría,
+    scales = "free_y",
+    ncol = 4,
+    labeller = labeller(Categoría = facet_labeller_es)
+  ) +
+  labs(
+    x = "Desierto",
+    y = "Abundancia (log10)"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "none",
+    strip.text = element_text(face = "bold", size = 10),
+    axis.title.x = element_text(size = 18, margin = margin(t = 12)),
+    axis.title.y = element_text(size = 18, margin = margin(r = 12)),
+    axis.text.x = element_text(size = 13, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 13),
+    panel.grid.minor = element_line(linewidth = 0.25),
+    panel.grid.major = element_line(linewidth = 0.35),
+    plot.margin = margin(12, 12, 12, 12)
+  )
+
+print(fig_violin_es)
+
+# 5.8 Guardar figura -------------------------------------------------------
+
+fig_jpg_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "figures",
+  "spanish_exact",
+  "05_violin_abundancia_por_categoria_espanol.jpg"
+)
+
+fig_png_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "figures",
+  "spanish_exact",
+  "05_violin_abundancia_por_categoria_espanol.png"
+)
+
+fig_pdf_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "figures",
+  "spanish_exact",
+  "05_violin_abundancia_por_categoria_espanol.pdf"
+)
+
+ggsave(
+  filename = fig_jpg_file,
+  plot = fig_violin_es,
+  width = 16,
+  height = 10,
+  dpi = 300
+)
+
+ggsave(
+  filename = fig_png_file,
+  plot = fig_violin_es,
+  width = 16,
+  height = 10,
+  dpi = 300
+)
+
+ggsave(
+  filename = fig_pdf_file,
+  plot = fig_violin_es,
+  width = 16,
+  height = 10,
+  device = cairo_pdf
+)
+
+log_step(
+  bloque = "Bloque 5",
+  accion = "Guardado de figura de violines en español",
+  decision_tecnica = "Guardar JPG, PNG y PDF con tamaño 16 x 10 pulgadas y 300 dpi",
+  razon = "El JPG reproduce la figura original; PNG y PDF quedan disponibles para edición/publicación.",
+  resultado = paste(fig_jpg_file, fig_png_file, fig_pdf_file, sep = " | ")
+)
+
+# 5.9 Guardar objeto RDS ---------------------------------------------------
+
+block5_objects_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "05_violin_spanish_exact.rds"
+)
+
+saveRDS(
+  list(
+    plot_data_es = plot_data_es,
+    facet_labels_es = facet_labels_es,
+    facet_labeller_es = facet_labeller_es,
+    plot_data_diagnostics = plot_data_diagnostics,
+    fig_violin_es = fig_violin_es,
+    colores_desierto = colores_desierto,
+    orden_categorias_es = orden_categorias_es
+  ),
+  block5_objects_file
+)
+
+# 5.10 Validaciones finales ------------------------------------------------
+
+validaciones_bloque5 <- tibble(
+  validacion = c(
+    "Figura JPG existe",
+    "Figura PNG existe",
+    "Figura PDF existe",
+    "Objeto RDS existe",
+    "plot_data_es tiene 18 categorías",
+    "plot_data_es tiene 18 muestras",
+    "Todas las abundancias del plot son positivas",
+    "Hay 18 etiquetas de faceta",
+    "Los colores están definidos para CC y VG"
+  ),
+  resultado = c(
+    file.exists(fig_jpg_file),
+    file.exists(fig_png_file),
+    file.exists(fig_pdf_file),
+    file.exists(block5_objects_file),
+    length(unique(plot_data_es$Categoría)) == 18,
+    length(unique(plot_data_es$Muestra)) == 18,
+    all(plot_data_es$Abundancia > 0),
+    length(facet_labeller_es) == 18,
+    setequal(names(colores_desierto), c("CC", "VG"))
+  )
+)
+
+validaciones_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "05_validaciones_bloque5.tsv"
+)
+
+readr::write_tsv(validaciones_bloque5, validaciones_file)
+
+cat("\n============================================================\n")
+cat("VALIDACIONES BLOQUE 5\n")
+cat("============================================================\n")
+print(validaciones_bloque5)
+
+if (any(!validaciones_bloque5$resultado)) {
+  stop(
+    "Una o más validaciones del Bloque 5 fallaron. Revisa results/qc/05_validaciones_bloque5.tsv antes de continuar."
+  )
+}
+
+cat("\n============================================================\n")
+cat("BLOQUE 5 COMPLETADO\n")
+cat("============================================================\n")
+cat("Figura JPG guardada en:\n")
+cat(fig_jpg_file, "\n\n")
+
+cat("Figura PNG guardada en:\n")
+cat(fig_png_file, "\n\n")
+
+cat("Figura PDF guardada en:\n")
+cat(fig_pdf_file, "\n\n")
+
+cat("Objeto RDS guardado en:\n")
+cat(block5_objects_file, "\n\n")
+
+cat("Para avanzar necesito que me confirmes:\n")
+cat("1) Si la figura se ve como la original.\n")
+cat("2) Si las validaciones del Bloque 5 salieron todas TRUE.\n")
+cat("3) Si quieres que el Bloque 6 genere la versión de publicación en inglés.\n")
+```
+```{r}
+# ============================================================
+# BLOQUE 6. FIGURA DE VIOLINES METACYC EN INGLÉS
+# Protocolo: Violines MetaCyc HUMAnN3
+# Modo: reproducibilidad estricta
+# ============================================================
+
+# Objetivo de este bloque:
+# 1. Recuperar los objetos validados de Bloques 3, 4 y 5.
+# 2. Generar la versión en inglés para publicación.
+# 3. Mantener exactamente:
+#    - misma tabla metacyc_long
+#    - mismas abundancias
+#    - mismo filtrado visual Abundancia > 0 para escala log10
+#    - mismos resultados Wilcoxon
+#    - mismo ajuste BH/FDR
+#    - mismos asteriscos de significancia
+#    - mismo orden de paneles
+# 4. Guardar JPG, PNG, PDF y TIFF.
+#
+# Importante:
+# Este bloque SOLO traduce etiquetas.
+# No recalcula ni modifica filtros, transformaciones, umbrales ni pruebas estadísticas.
+
+# 6.1 Cargar paquetes ------------------------------------------------------
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(ggplot2)
+  library(scales)
+})
+
+# 6.2 Recuperar objetos previos --------------------------------------------
+
+BASE_DIR <- "/Users/ale/Desktop/HUMAnN3"
+PROJECT_DIR <- file.path(BASE_DIR, "MetaCyc_violins_reproducible")
+
+block3_objects_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "03_metacyc_categories_long_summary.rds"
+)
+
+block4_objects_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "04_metacyc_statistics_tables.rds"
+)
+
+block5_objects_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "05_violin_spanish_exact.rds"
+)
+
+if (!file.exists(block3_objects_file)) {
+  stop("No se encontró el objeto del Bloque 3. Corre el Bloque 3 antes de continuar.")
+}
+
+if (!file.exists(block4_objects_file)) {
+  stop("No se encontró el objeto del Bloque 4. Corre el Bloque 4 antes de continuar.")
+}
+
+if (!file.exists(block5_objects_file)) {
+  stop("No se encontró el objeto del Bloque 5. Corre el Bloque 5 antes de continuar.")
+}
+
+block3 <- readRDS(block3_objects_file)
+block4 <- readRDS(block4_objects_file)
+block5 <- readRDS(block5_objects_file)
+
+metacyc_long <- block3$metacyc_long
+test_resultados <- block4$test_resultados
+tabla_final <- block4$tabla_final
+orden_categorias_es <- block5$orden_categorias_es
+colores_desierto <- block5$colores_desierto
+
+log_file <- file.path(PROJECT_DIR, "results", "logs", "bitacora_automatica.tsv")
+
+log_step <- function(bloque, accion, decision_tecnica, razon, resultado = "OK") {
+  entrada <- tibble(
+    timestamp = as.character(Sys.time()),
+    bloque = bloque,
+    accion = accion,
+    decision_tecnica = decision_tecnica,
+    razon = razon,
+    resultado = resultado
+  )
+  readr::write_tsv(entrada, log_file, append = TRUE)
+}
+
+log_step(
+  bloque = "Bloque 6",
+  accion = "Inicio de figura de violines en inglés",
+  decision_tecnica = "Traducir etiquetas de categorías y ejes sin modificar datos ni estadísticos",
+  razon = "La usuaria requiere versión para publicación en inglés, manteniendo reproducibilidad estricta.",
+  resultado = "Objetos recuperados correctamente"
+)
+
+# 6.3 Diccionario de traducción español-inglés ------------------------------
+
+category_translation <- tibble(
+  Categoría = c(
+    "Metabolismo del azufre",
+    "Estrés oxidativo y respuesta ambiental",
+    "Aminoácidos: degradación",
+    "Metabolismo del fósforo",
+    "Otras funciones / sin clasificar",
+    "Protección UV",
+    "Aminoácidos: biosíntesis",
+    "Nucleótidos",
+    "Biofilm y adhesión",
+    "Respiración y transporte de electrones",
+    "Polisacáridos y pared celular",
+    "Fermentación",
+    "Vitaminas y cofactores",
+    "Metabolismo del nitrógeno",
+    "Metabolismo de compuestos aromáticos",
+    "Fotosíntesis y pigmentos",
+    "Metabolismo del metano y C1",
+    "Glucólisis y metabolismo central"
+  ),
+  Functional_category = c(
+    "Sulfur metabolism",
+    "Oxidative stress and environmental response",
+    "Amino acid degradation",
+    "Phosphorus metabolism",
+    "Other or unclassified functions",
+    "UV protection",
+    "Amino acid biosynthesis",
+    "Nucleotides",
+    "Biofilm and adhesion",
+    "Respiration and electron transport",
+    "Cell wall and polysaccharides",
+    "Fermentation",
+    "Vitamins and cofactors",
+    "Nitrogen metabolism",
+    "Aromatic compound metabolism",
+    "Photosynthesis and pigments",
+    "Methane and C1 metabolism",
+    "Glycolysis and central metabolism"
+  )
+)
+
+translation_file <- file.path(
+  PROJECT_DIR,
+  "metadata",
+  "06_category_translation_spanish_english.tsv"
+)
+
+readr::write_tsv(category_translation, translation_file)
+
+# 6.4 Validar traducción ----------------------------------------------------
+
+categorias_observadas <- sort(unique(metacyc_long$Categoría))
+
+missing_translation <- setdiff(categorias_observadas, category_translation$Categoría)
+extra_translation <- setdiff(category_translation$Categoría, categorias_observadas)
+
+if (length(missing_translation) > 0) {
+  stop(
+    paste0(
+      "Faltan traducciones para estas categorías: ",
+      paste(missing_translation, collapse = ", ")
+    )
+  )
+}
+
+if (length(extra_translation) > 0) {
+  stop(
+    paste0(
+      "Hay traducciones para categorías que no están en metacyc_long: ",
+      paste(extra_translation, collapse = ", ")
+    )
+  )
+}
+
+# 6.5 Definir orden en inglés ----------------------------------------------
+
+orden_categorias_en <- category_translation %>%
+  mutate(Categoría = factor(Categoría, levels = orden_categorias_es)) %>%
+  arrange(Categoría) %>%
+  pull(Functional_category)
+
+order_file <- file.path(
+  PROJECT_DIR,
+  "metadata",
+  "06_category_order_english.tsv"
+)
+
+readr::write_tsv(
+  tibble(
+    order = seq_along(orden_categorias_en),
+    Functional_category = orden_categorias_en
+  ),
+  order_file
+)
+
+# 6.6 Crear etiquetas de faceta con asterisco -------------------------------
+
+facet_labels_en <- test_resultados %>%
+  left_join(category_translation, by = "Categoría") %>%
+  mutate(
+    facet_label = if_else(
+      p.adj < 0.05,
+      paste0(Functional_category, " *"),
+      Functional_category
+    )
+  ) %>%
+  select(Categoría, Functional_category, p.adj, Significancia, facet_label)
+
+facet_labeller_en <- setNames(
+  facet_labels_en$facet_label,
+  facet_labels_en$Functional_category
+)
+
+facet_labels_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "tables",
+  "06_facet_labels_english_publication.tsv"
+)
+
+readr::write_tsv(facet_labels_en, facet_labels_file)
+
+# 6.7 Preparar datos de visualización --------------------------------------
+# Igual que en el Bloque 5: Abundancia > 0 solo para graficar en log10.
+
+plot_data_en <- metacyc_long %>%
+  filter(Abundancia > 0) %>%
+  left_join(category_translation, by = "Categoría") %>%
+  mutate(
+    Functional_category = factor(
+      Functional_category,
+      levels = orden_categorias_en
+    ),
+    Desert = factor(
+      Desierto,
+      levels = c("CC", "VG")
+    )
+  )
+
+plot_data_diagnostics_en <- tibble(
+  diagnostic_item = c(
+    "Rows in original metacyc_long",
+    "Rows used for log10 plot",
+    "Rows with Abundance == 0 excluded only from plot",
+    "Number of categories in plot",
+    "Number of samples in plot",
+    "Minimum positive abundance",
+    "Maximum abundance",
+    "Statistical test used",
+    "Multiple testing correction",
+    "Significance threshold"
+  ),
+  value = c(
+    as.character(nrow(metacyc_long)),
+    as.character(nrow(plot_data_en)),
+    as.character(sum(metacyc_long$Abundancia == 0, na.rm = TRUE)),
+    as.character(length(unique(plot_data_en$Functional_category))),
+    as.character(length(unique(plot_data_en$Muestra))),
+    as.character(min(plot_data_en$Abundancia, na.rm = TRUE)),
+    as.character(max(plot_data_en$Abundancia, na.rm = TRUE)),
+    "Wilcoxon rank-sum test",
+    "Benjamini-Hochberg FDR",
+    "Adjusted p-value < 0.05"
+  )
+)
+
+plot_data_diag_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "06_plot_data_diagnostics_english.tsv"
+)
+
+readr::write_tsv(plot_data_diagnostics_en, plot_data_diag_file)
+
+cat("\nDiagnostics for English publication plot:\n")
+print(plot_data_diagnostics_en)
+
+log_step(
+  bloque = "Bloque 6",
+  accion = "Preparación de datos para figura en inglés",
+  decision_tecnica = "Usar Abundancia > 0 solo para visualización log10 y traducir categorías",
+  razon = "log10(0) no está definido; los estadísticos permanecen calculados sobre metacyc_long completo.",
+  resultado = plot_data_diag_file
+)
+
+# 6.8 Crear figura en inglés -----------------------------------------------
+
+fig_violin_en <- ggplot(
+  plot_data_en,
+  aes(
+    x = Desert,
+    y = Abundancia,
+    fill = Desert
+  )
+) +
+  geom_violin(
+    trim = FALSE,
+    alpha = 0.65,
+    color = NA
+  ) +
+  geom_boxplot(
+    width = 0.12,
+    outlier.shape = NA,
+    alpha = 0.85,
+    color = "gray20",
+    fill = NA,
+    linewidth = 0.6
+  ) +
+  scale_y_log10(
+    labels = function(x) format(x, scientific = FALSE, trim = TRUE)
+  ) +
+  scale_fill_manual(
+    values = colores_desierto
+  ) +
+  facet_wrap(
+    ~ Functional_category,
+    scales = "free_y",
+    ncol = 4,
+    labeller = labeller(Functional_category = facet_labeller_en)
+  ) +
+  labs(
+    x = "Desert",
+    y = "Abundance (log10)"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "none",
+    strip.text = element_text(face = "bold", size = 10),
+    axis.title.x = element_text(size = 18, margin = margin(t = 12)),
+    axis.title.y = element_text(size = 18, margin = margin(r = 12)),
+    axis.text.x = element_text(size = 13, angle = 45, hjust = 1),
+    axis.text.y = element_text(size = 13),
+    panel.grid.minor = element_line(linewidth = 0.25),
+    panel.grid.major = element_line(linewidth = 0.35),
+    plot.margin = margin(12, 12, 12, 12)
+  )
+
+print(fig_violin_en)
+
+# 6.9 Guardar figura -------------------------------------------------------
+
+fig_jpg_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "figures",
+  "english_publication",
+  "06_violin_metacyc_abundance_by_functional_category_english.jpg"
+)
+
+fig_png_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "figures",
+  "english_publication",
+  "06_violin_metacyc_abundance_by_functional_category_english.png"
+)
+
+fig_pdf_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "figures",
+  "english_publication",
+  "06_violin_metacyc_abundance_by_functional_category_english.pdf"
+)
+
+fig_tiff_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "figures",
+  "english_publication",
+  "06_violin_metacyc_abundance_by_functional_category_english.tiff"
+)
+
+ggsave(
+  filename = fig_jpg_file,
+  plot = fig_violin_en,
+  width = 16,
+  height = 10,
+  dpi = 300
+)
+
+ggsave(
+  filename = fig_png_file,
+  plot = fig_violin_en,
+  width = 16,
+  height = 10,
+  dpi = 300
+)
+
+ggsave(
+  filename = fig_pdf_file,
+  plot = fig_violin_en,
+  width = 16,
+  height = 10,
+  device = cairo_pdf
+)
+
+ggsave(
+  filename = fig_tiff_file,
+  plot = fig_violin_en,
+  width = 16,
+  height = 10,
+  dpi = 600,
+  compression = "lzw"
+)
+
+log_step(
+  bloque = "Bloque 6",
+  accion = "Guardado de figura de violines en inglés",
+  decision_tecnica = "Guardar JPG, PNG, PDF y TIFF; TIFF a 600 dpi con compresión LZW",
+  razon = "Formatos adecuados para revisión, edición y envío a revista.",
+  resultado = paste(fig_jpg_file, fig_png_file, fig_pdf_file, fig_tiff_file, sep = " | ")
+)
+
+# 6.10 Tabla estadística traducida -----------------------------------------
+
+tabla_final_en <- tabla_final %>%
+  left_join(category_translation, by = "Categoría") %>%
+  select(
+    Functional_category,
+    Spanish_category = Categoría,
+    CC,
+    VG,
+    `Delta abundance (CC - VG)` = `Δ Abundancia (CC - VG)`,
+    `Relative difference (%)` = `Diferencia relativa (%)`,
+    `Dominant desert` = `Desierto dominante`,
+    raw_p_value = p,
+    adjusted_p_value_BH = p_valor,
+    Significance = Significancia,
+    significant = significativo,
+    statistic,
+    group1,
+    group2,
+    n1,
+    n2
+  ) %>%
+  arrange(adjusted_p_value_BH, Functional_category)
+
+tabla_final_en_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "tables",
+  "06_statistical_summary_english_publication.tsv"
+)
+
+readr::write_tsv(tabla_final_en, tabla_final_en_file)
+
+cat("\nEnglish statistical summary:\n")
+print(tabla_final_en)
+
+# 6.11 Guardar pie de figura sugerido --------------------------------------
+
+figure_caption_en <- tibble(
+  figure = "MetaCyc functional category violin plot",
+  caption = paste0(
+    "Distribution of MetaCyc functional abundance across biological soil crust metagenomes from Cuatro Ciénegas (CC) and Valle de Guadalupe (VG). ",
+    "Each panel represents a functional category, and the y-axis shows abundance on a log10 scale. ",
+    "Violin plots show the distribution of positive abundance values, with embedded boxplots indicating the median and interquartile range. ",
+    "Asterisks in facet labels indicate significant differences between deserts after Benjamini-Hochberg correction of Wilcoxon rank-sum tests (* adjusted p < 0.05, ** adjusted p < 0.01, *** adjusted p < 0.001)."
+  )
+)
+
+caption_file <- file.path(
+  PROJECT_DIR,
+  "docs",
+  "06_suggested_figure_caption_english.tsv"
+)
+
+readr::write_tsv(figure_caption_en, caption_file)
+
+# 6.12 Guardar objeto RDS ---------------------------------------------------
+
+block6_objects_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "06_violin_english_publication.rds"
+)
+
+saveRDS(
+  list(
+    category_translation = category_translation,
+    facet_labels_en = facet_labels_en,
+    facet_labeller_en = facet_labeller_en,
+    plot_data_en = plot_data_en,
+    plot_data_diagnostics_en = plot_data_diagnostics_en,
+    fig_violin_en = fig_violin_en,
+    tabla_final_en = tabla_final_en,
+    figure_caption_en = figure_caption_en,
+    orden_categorias_en = orden_categorias_en
+  ),
+  block6_objects_file
+)
+
+# 6.13 Validaciones finales ------------------------------------------------
+
+validaciones_bloque6 <- tibble(
+  validacion = c(
+    "Figura JPG existe",
+    "Figura PNG existe",
+    "Figura PDF existe",
+    "Figura TIFF existe",
+    "Objeto RDS existe",
+    "Tabla estadística en inglés existe",
+    "Caption en inglés existe",
+    "plot_data_en tiene 18 categorías",
+    "plot_data_en tiene 18 muestras",
+    "Todas las abundancias del plot son positivas",
+    "Hay 18 etiquetas de faceta",
+    "Todas las categorías tienen traducción",
+    "Los colores están definidos para CC y VG"
+  ),
+  resultado = c(
+    file.exists(fig_jpg_file),
+    file.exists(fig_png_file),
+    file.exists(fig_pdf_file),
+    file.exists(fig_tiff_file),
+    file.exists(block6_objects_file),
+    file.exists(tabla_final_en_file),
+    file.exists(caption_file),
+    length(unique(plot_data_en$Functional_category)) == 18,
+    length(unique(plot_data_en$Muestra)) == 18,
+    all(plot_data_en$Abundancia > 0),
+    length(facet_labeller_en) == 18,
+    length(missing_translation) == 0,
+    setequal(names(colores_desierto), c("CC", "VG"))
+  )
+)
+
+validaciones_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "06_validaciones_bloque6.tsv"
+)
+
+readr::write_tsv(validaciones_bloque6, validaciones_file)
+
+cat("\n============================================================\n")
+cat("VALIDACIONES BLOQUE 6\n")
+cat("============================================================\n")
+print(validaciones_bloque6)
+
+if (any(!validaciones_bloque6$resultado)) {
+  stop(
+    "Una o más validaciones del Bloque 6 fallaron. Revisa results/qc/06_validaciones_bloque6.tsv antes de continuar."
+  )
+}
+
+cat("\n============================================================\n")
+cat("BLOQUE 6 COMPLETADO\n")
+cat("============================================================\n")
+cat("Figura JPG guardada en:\n")
+cat(fig_jpg_file, "\n\n")
+
+cat("Figura PNG guardada en:\n")
+cat(fig_png_file, "\n\n")
+
+cat("Figura PDF guardada en:\n")
+cat(fig_pdf_file, "\n\n")
+
+cat("Figura TIFF guardada en:\n")
+cat(fig_tiff_file, "\n\n")
+
+cat("Tabla estadística en inglés guardada en:\n")
+cat(tabla_final_en_file, "\n\n")
+
+cat("Pie de figura sugerido guardado en:\n")
+cat(caption_file, "\n\n")
+
+cat("Objeto RDS guardado en:\n")
+cat(block6_objects_file, "\n\n")
+
+cat("Para avanzar necesito que me confirmes:\n")
+cat("1) Si la figura en inglés se generó correctamente.\n")
+cat("2) Si todas las validaciones del Bloque 6 salieron TRUE.\n")
+```
+
+```{r}
+# ============================================================
+# BLOQUE 6B. CORRECCIONES EDITORIALES PARA PUBLICACIÓN
+# Figura de violines MetaCyc en inglés
+# ============================================================
+
+# Objetivo:
+# 1. Mejorar etiqueta del eje Y.
+# 2. Envolver títulos largos de facetas.
+# 3. Mantener mismos datos, mismos p-valores y mismos asteriscos.
+# 4. Guardar versión final para revista en PDF, TIFF, PNG y JPG.
+# 5. Guardar caption metodológico corregido.
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(ggplot2)
+  library(scales)
+  library(stringr)
+})
+
+# 6B.1 Rutas y objetos -----------------------------------------------------
+
+BASE_DIR <- "/Users/ale/Desktop/HUMAnN3"
+PROJECT_DIR <- file.path(BASE_DIR, "MetaCyc_violins_reproducible")
+
+block3_objects_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "03_metacyc_categories_long_summary.rds"
+)
+
+block4_objects_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "04_metacyc_statistics_tables.rds"
+)
+
+block5_objects_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "05_violin_spanish_exact.rds"
+)
+
+block3 <- readRDS(block3_objects_file)
+block4 <- readRDS(block4_objects_file)
+block5 <- readRDS(block5_objects_file)
+
+metacyc_long <- block3$metacyc_long
+test_resultados <- block4$test_resultados
+tabla_final <- block4$tabla_final
+orden_categorias_es <- block5$orden_categorias_es
+colores_desierto <- block5$colores_desierto
+
+log_file <- file.path(PROJECT_DIR, "results", "logs", "bitacora_automatica.tsv")
+
+log_step <- function(bloque, accion, decision_tecnica, razon, resultado = "OK") {
+  entrada <- tibble(
+    timestamp = as.character(Sys.time()),
+    bloque = bloque,
+    accion = accion,
+    decision_tecnica = decision_tecnica,
+    razon = razon,
+    resultado = resultado
+  )
+  readr::write_tsv(entrada, log_file, append = TRUE)
+}
+
+log_step(
+  bloque = "Bloque 6B",
+  accion = "Correcciones editoriales de figura en inglés",
+  decision_tecnica = "Mejorar eje Y, envolver facetas largas y guardar versión final de publicación",
+  razon = "Aumentar claridad para revista científica sin modificar datos ni estadísticos.",
+  resultado = "Inicio correcto"
+)
+
+# 6B.2 Diccionario español-inglés ------------------------------------------
+
+category_translation <- tibble(
+  Categoría = c(
+    "Metabolismo del azufre",
+    "Estrés oxidativo y respuesta ambiental",
+    "Aminoácidos: degradación",
+    "Metabolismo del fósforo",
+    "Otras funciones / sin clasificar",
+    "Protección UV",
+    "Aminoácidos: biosíntesis",
+    "Nucleótidos",
+    "Biofilm y adhesión",
+    "Respiración y transporte de electrones",
+    "Polisacáridos y pared celular",
+    "Fermentación",
+    "Vitaminas y cofactores",
+    "Metabolismo del nitrógeno",
+    "Metabolismo de compuestos aromáticos",
+    "Fotosíntesis y pigmentos",
+    "Metabolismo del metano y C1",
+    "Glucólisis y metabolismo central"
+  ),
+  Functional_category = c(
+    "Sulfur metabolism",
+    "Oxidative stress and environmental response",
+    "Amino acid degradation",
+    "Phosphorus metabolism",
+    "Other or unclassified functions",
+    "UV protection",
+    "Amino acid biosynthesis",
+    "Nucleotides",
+    "Biofilm and adhesion",
+    "Respiration and electron transport",
+    "Cell wall and polysaccharides",
+    "Fermentation",
+    "Vitamins and cofactors",
+    "Nitrogen metabolism",
+    "Aromatic compound metabolism",
+    "Photosynthesis and pigments",
+    "Methane and C1 metabolism",
+    "Glycolysis and central metabolism"
+  )
+)
+
+orden_categorias_en <- category_translation %>%
+  mutate(Categoría = factor(Categoría, levels = orden_categorias_es)) %>%
+  arrange(Categoría) %>%
+  pull(Functional_category)
+
+# 6B.3 Etiquetas de faceta con saltos de línea ------------------------------
+# Mantiene los mismos asteriscos del Bloque 4.
+# Solo mejora legibilidad de títulos largos.
+
+facet_labels_en_publication <- test_resultados %>%
+  left_join(category_translation, by = "Categoría") %>%
+  mutate(
+    Functional_category_wrapped = str_wrap(Functional_category, width = 26),
+    facet_label = if_else(
+      p.adj < 0.05,
+      paste0(Functional_category_wrapped, " *"),
+      Functional_category_wrapped
+    )
+  ) %>%
+  select(
+    Categoría,
+    Functional_category,
+    Functional_category_wrapped,
+    p.adj,
+    Significancia,
+    facet_label
+  )
+
+facet_labeller_en_publication <- setNames(
+  facet_labels_en_publication$facet_label,
+  facet_labels_en_publication$Functional_category
+)
+
+facet_labels_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "tables",
+  "06B_facet_labels_english_publication_wrapped.tsv"
+)
+
+readr::write_tsv(facet_labels_en_publication, facet_labels_file)
+
+# 6B.4 Datos para visualización --------------------------------------------
+# Igual que Bloque 6:
+# Se excluyen ceros solo para visualizar en log10.
+# La estadística sigue viniendo del Bloque 4.
+
+plot_data_en_publication <- metacyc_long %>%
+  filter(Abundancia > 0) %>%
+  left_join(category_translation, by = "Categoría") %>%
+  mutate(
+    Functional_category = factor(
+      Functional_category,
+      levels = orden_categorias_en
+    ),
+    Desert = factor(
+      Desierto,
+      levels = c("CC", "VG")
+    )
+  )
+
+plot_data_diag_publication <- tibble(
+  diagnostic_item = c(
+    "Rows in original metacyc_long",
+    "Rows used for log10 plot",
+    "Rows with Abundance == 0 excluded only from plot",
+    "Number of functional categories",
+    "Number of samples",
+    "Statistical test",
+    "Multiple-testing correction",
+    "Significance threshold",
+    "Facet label wrapping width"
+  ),
+  value = c(
+    as.character(nrow(metacyc_long)),
+    as.character(nrow(plot_data_en_publication)),
+    as.character(sum(metacyc_long$Abundancia == 0, na.rm = TRUE)),
+    as.character(length(unique(plot_data_en_publication$Functional_category))),
+    as.character(length(unique(plot_data_en_publication$Muestra))),
+    "Wilcoxon rank-sum test",
+    "Benjamini-Hochberg false discovery rate correction",
+    "Adjusted p-value < 0.05",
+    "26 characters"
+  )
+)
+
+plot_diag_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "06B_plot_data_diagnostics_publication.tsv"
+)
+
+readr::write_tsv(plot_data_diag_publication, plot_diag_file)
+
+cat("\nDiagnóstico de datos para figura final de publicación:\n")
+print(plot_data_diag_publication)
+
+# 6B.5 Etiqueta del eje Y ---------------------------------------------------
+# Esta versión es conservadora porque el archivo se llama rxn-cpm-metacyc.tsv,
+# pero las columnas internas se llaman Abundance-RPKs.
+# Si en métodos confirmas que la tabla está normalizada a CPM, puedes usar:
+# Y_AXIS_LABEL <- expression(log[10]~"MetaCyc reaction abundance (CPM)")
+
+Y_AXIS_LABEL <- expression(log[10]~"MetaCyc reaction abundance")
+
+# 6B.6 Figura final corregida ----------------------------------------------
+
+fig_violin_en_publication <- ggplot(
+  plot_data_en_publication,
+  aes(
+    x = Desert,
+    y = Abundancia,
+    fill = Desert
+  )
+) +
+  geom_violin(
+    trim = FALSE,
+    alpha = 0.65,
+    color = NA
+  ) +
+  geom_boxplot(
+    width = 0.12,
+    outlier.shape = NA,
+    alpha = 0.90,
+    color = "gray20",
+    fill = NA,
+    linewidth = 0.55
+  ) +
+  scale_y_log10(
+    labels = function(x) format(x, scientific = FALSE, trim = TRUE)
+  ) +
+  scale_fill_manual(
+    values = colores_desierto
+  ) +
+  facet_wrap(
+    ~ Functional_category,
+    scales = "free_y",
+    ncol = 4,
+    labeller = labeller(
+      Functional_category = facet_labeller_en_publication
+    )
+  ) +
+  labs(
+    x = "Desert",
+    y = Y_AXIS_LABEL
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "none",
+    strip.text = element_text(
+      face = "bold",
+      size = 9.5,
+      lineheight = 0.95
+    ),
+    axis.title.x = element_text(
+      size = 18,
+      margin = margin(t = 12)
+    ),
+    axis.title.y = element_text(
+      size = 18,
+      margin = margin(r = 12)
+    ),
+    axis.text.x = element_text(
+      size = 13,
+      angle = 45,
+      hjust = 1
+    ),
+    axis.text.y = element_text(
+      size = 12
+    ),
+    panel.grid.minor = element_line(linewidth = 0.20),
+    panel.grid.major = element_line(linewidth = 0.32),
+    panel.spacing = unit(1.05, "lines"),
+    plot.margin = margin(14, 14, 14, 14)
+  )
+
+print(fig_violin_en_publication)
+
+# 6B.7 Guardar figura final -------------------------------------------------
+
+fig_jpg_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "figures",
+  "english_publication",
+  "06B_violin_metacyc_functional_categories_PUBLICATION_FINAL.jpg"
+)
+
+fig_png_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "figures",
+  "english_publication",
+  "06B_violin_metacyc_functional_categories_PUBLICATION_FINAL.png"
+)
+
+fig_pdf_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "figures",
+  "english_publication",
+  "06B_violin_metacyc_functional_categories_PUBLICATION_FINAL.pdf"
+)
+
+fig_tiff_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "figures",
+  "english_publication",
+  "06B_violin_metacyc_functional_categories_PUBLICATION_FINAL.tiff"
+)
+
+ggsave(
+  filename = fig_jpg_file,
+  plot = fig_violin_en_publication,
+  width = 16,
+  height = 10,
+  dpi = 300
+)
+
+ggsave(
+  filename = fig_png_file,
+  plot = fig_violin_en_publication,
+  width = 16,
+  height = 10,
+  dpi = 300
+)
+
+ggsave(
+  filename = fig_pdf_file,
+  plot = fig_violin_en_publication,
+  width = 16,
+  height = 10,
+  device = cairo_pdf
+)
+
+ggsave(
+  filename = fig_tiff_file,
+  plot = fig_violin_en_publication,
+  width = 16,
+  height = 10,
+  dpi = 600,
+  compression = "lzw"
+)
+
+# 6B.8 Caption corregido ----------------------------------------------------
+
+caption_publication <- tibble(
+  figure = "MetaCyc functional category abundance violin plot",
+  caption = paste0(
+    "Distribution of MetaCyc reaction abundances across biological soil crust metagenomes from Cuatro Ciénegas (CC) and Valle de Guadalupe (VG). ",
+    "Each panel represents a functional category, and the y-axis shows log10-transformed MetaCyc reaction abundance. ",
+    "Violin plots show the distribution of positive abundance values used for log-scale visualization, with embedded boxplots indicating the median and interquartile range. ",
+    "Statistical comparisons were performed on the full abundance table using Wilcoxon rank-sum tests between deserts within each functional category. ",
+    "P-values were adjusted for multiple comparisons using the Benjamini-Hochberg false discovery rate correction. ",
+    "Asterisks in facet labels indicate significant differences between deserts after FDR correction: * adjusted p < 0.05, ** adjusted p < 0.01, *** adjusted p < 0.001."
+  )
+)
+
+caption_tsv_file <- file.path(
+  PROJECT_DIR,
+  "docs",
+  "06B_PUBLICATION_FINAL_caption_english.tsv"
+)
+
+caption_txt_file <- file.path(
+  PROJECT_DIR,
+  "docs",
+  "06B_PUBLICATION_FINAL_caption_english.txt"
+)
+
+readr::write_tsv(caption_publication, caption_tsv_file)
+
+writeLines(
+  caption_publication$caption,
+  caption_txt_file
+)
+
+cat("\nCaption sugerido para publicación:\n")
+cat(caption_publication$caption, "\n")
+
+# 6B.9 Tabla estadística en inglés corregida -------------------------------
+
+tabla_final_en_publication <- tabla_final %>%
+  left_join(category_translation, by = "Categoría") %>%
+  mutate(
+    Significant_after_FDR = case_when(
+      Significancia == "ns" ~ "No",
+      TRUE ~ "Yes"
+    )
+  ) %>%
+  select(
+    Functional_category,
+    Spanish_category = Categoría,
+    Mean_abundance_CC = CC,
+    Mean_abundance_VG = VG,
+    Delta_abundance_CC_minus_VG = `Δ Abundancia (CC - VG)`,
+    Relative_difference_percent = `Diferencia relativa (%)`,
+    Dominant_desert = `Desierto dominante`,
+    Wilcoxon_raw_p = p,
+    BH_adjusted_p = p_valor,
+    Significance_code = Significancia,
+    Significant_after_FDR,
+    Wilcoxon_statistic = statistic,
+    group1,
+    group2,
+    n1,
+    n2
+  ) %>%
+  arrange(BH_adjusted_p, Functional_category)
+
+tabla_final_en_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "tables",
+  "06B_PUBLICATION_FINAL_statistical_summary_english.tsv"
+)
+
+readr::write_tsv(tabla_final_en_publication, tabla_final_en_file)
+
+cat("\nTabla estadística corregida para publicación:\n")
+print(tabla_final_en_publication)
+
+# 6B.10 Guardar objeto RDS --------------------------------------------------
+
+block6B_objects_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "06B_violin_english_publication_FINAL.rds"
+)
+
+saveRDS(
+  list(
+    category_translation = category_translation,
+    facet_labels_en_publication = facet_labels_en_publication,
+    facet_labeller_en_publication = facet_labeller_en_publication,
+    plot_data_en_publication = plot_data_en_publication,
+    plot_data_diag_publication = plot_data_diag_publication,
+    fig_violin_en_publication = fig_violin_en_publication,
+    caption_publication = caption_publication,
+    tabla_final_en_publication = tabla_final_en_publication,
+    Y_AXIS_LABEL = Y_AXIS_LABEL
+  ),
+  block6B_objects_file
+)
+
+# 6B.11 Validaciones finales -----------------------------------------------
+
+validaciones_bloque6B <- tibble(
+  validacion = c(
+    "Figura final JPG existe",
+    "Figura final PNG existe",
+    "Figura final PDF existe",
+    "Figura final TIFF existe",
+    "Caption TSV existe",
+    "Caption TXT existe",
+    "Tabla estadística final existe",
+    "Objeto RDS final existe",
+    "La figura usa 18 categorías",
+    "La figura usa 18 muestras",
+    "Todas las abundancias graficadas son positivas",
+    "Las etiquetas de faceta son 18",
+    "No se recalcularon estadísticos en este bloque"
+  ),
+  resultado = c(
+    file.exists(fig_jpg_file),
+    file.exists(fig_png_file),
+    file.exists(fig_pdf_file),
+    file.exists(fig_tiff_file),
+    file.exists(caption_tsv_file),
+    file.exists(caption_txt_file),
+    file.exists(tabla_final_en_file),
+    file.exists(block6B_objects_file),
+    length(unique(plot_data_en_publication$Functional_category)) == 18,
+    length(unique(plot_data_en_publication$Muestra)) == 18,
+    all(plot_data_en_publication$Abundancia > 0),
+    length(facet_labeller_en_publication) == 18,
+    TRUE
+  )
+)
+
+validaciones_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "06B_validaciones_publication_final.tsv"
+)
+
+readr::write_tsv(validaciones_bloque6B, validaciones_file)
+
+cat("\n============================================================\n")
+cat("VALIDACIONES BLOQUE 6B\n")
+cat("============================================================\n")
+print(validaciones_bloque6B)
+
+if (any(!validaciones_bloque6B$resultado)) {
+  stop(
+    "Una o más validaciones del Bloque 6B fallaron. Revisa results/qc/06B_validaciones_publication_final.tsv."
+  )
+}
+
+log_step(
+  bloque = "Bloque 6B",
+  accion = "Guardado de versión final de publicación",
+  decision_tecnica = "Guardar figura final, caption, tabla estadística y objeto RDS",
+  razon = "Dejar lista una versión trazable y adecuada para manuscrito o envío a revista.",
+  resultado = paste(fig_pdf_file, fig_tiff_file, caption_txt_file, sep = " | ")
+)
+
+cat("\n============================================================\n")
+cat("BLOQUE 6B COMPLETADO\n")
+cat("============================================================\n")
+cat("Figura final PDF:\n")
+cat(fig_pdf_file, "\n\n")
+
+cat("Figura final TIFF:\n")
+cat(fig_tiff_file, "\n\n")
+
+cat("Caption final TXT:\n")
+cat(caption_txt_file, "\n\n")
+
+cat("Tabla estadística final:\n")
+cat(tabla_final_en_file, "\n\n")
+```
+```{r}
+# ============================================================
+# BLOQUE 7. PREPARACIÓN DE DATOS PARA GRÁFICO DE BARRAS
+# Protocolo: Barras MetaCyc HUMAnN3
+# Modo: reproducibilidad estricta
+# ============================================================
+
+# Objetivo:
+# 1. Recuperar metacyc_long y estadísticos previos.
+# 2. Calcular abundancia total por categoría funcional en cada muestra.
+# 3. Resumir por categoría y desierto:
+#    - media
+#    - desviación estándar
+#    - error estándar
+#    - n de muestras
+# 4. Conservar los p-valores ajustados del Bloque 4.
+# 5. Guardar tabla lista para graficar.
+#
+# Importante:
+# - No se recalcula Wilcoxon.
+# - No se cambian filtros.
+# - No se cambian transformaciones.
+# - No se cambian umbrales.
+# - Los asteriscos vienen del Bloque 4.
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+})
+
+# 7.1 Rutas y objetos ------------------------------------------------------
+
+BASE_DIR <- "/Users/ale/Desktop/HUMAnN3"
+PROJECT_DIR <- file.path(BASE_DIR, "MetaCyc_violins_reproducible")
+
+block3_objects_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "03_metacyc_categories_long_summary.rds"
+)
+
+block4_objects_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "04_metacyc_statistics_tables.rds"
+)
+
+block5_objects_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "05_violin_spanish_exact.rds"
+)
+
+if (!file.exists(block3_objects_file)) {
+  stop("No se encontró el objeto del Bloque 3.")
+}
+
+if (!file.exists(block4_objects_file)) {
+  stop("No se encontró el objeto del Bloque 4.")
+}
+
+if (!file.exists(block5_objects_file)) {
+  stop("No se encontró el objeto del Bloque 5.")
+}
+
+block3 <- readRDS(block3_objects_file)
+block4 <- readRDS(block4_objects_file)
+block5 <- readRDS(block5_objects_file)
+
+metacyc_long <- block3$metacyc_long
+test_resultados <- block4$test_resultados
+orden_categorias_es <- block5$orden_categorias_es
+colores_desierto <- block5$colores_desierto
+
+log_file <- file.path(PROJECT_DIR, "results", "logs", "bitacora_automatica.tsv")
+
+log_step <- function(bloque, accion, decision_tecnica, razon, resultado = "OK") {
+  entrada <- tibble(
+    timestamp = as.character(Sys.time()),
+    bloque = bloque,
+    accion = accion,
+    decision_tecnica = decision_tecnica,
+    razon = razon,
+    resultado = resultado
+  )
+  readr::write_tsv(entrada, log_file, append = TRUE)
+}
+
+log_step(
+  bloque = "Bloque 7",
+  accion = "Preparación de datos para gráfico de barras",
+  decision_tecnica = "Sumar abundancia por muestra y categoría; resumir media ± error estándar por desierto",
+  razon = "Las barras deben representar variación entre muestras biológicas, no solo distribución de reacciones individuales.",
+  resultado = "Inicio correcto"
+)
+
+# 7.2 Validaciones de entrada ----------------------------------------------
+
+required_cols_long <- c("Muestra", "Funcion", "Abundancia", "Desierto", "Categoría")
+required_cols_stats <- c("Categoría", "p.adj", "Significancia")
+
+if (!all(required_cols_long %in% colnames(metacyc_long))) {
+  stop("metacyc_long no contiene todas las columnas necesarias.")
+}
+
+if (!all(required_cols_stats %in% colnames(test_resultados))) {
+  stop("test_resultados no contiene Categoría, p.adj y Significancia.")
+}
+
+if (!is.numeric(metacyc_long$Abundancia)) {
+  stop("La columna Abundancia no es numérica.")
+}
+
+if (!setequal(unique(metacyc_long$Desierto), c("CC", "VG"))) {
+  stop("La columna Desierto debe contener exclusivamente CC y VG.")
+}
+
+if (any(is.na(metacyc_long$Abundancia))) {
+  stop("Hay NA en Abundancia.")
+}
+
+# 7.3 Abundancia total por muestra y categoría -----------------------------
+
+category_sample_abundance <- metacyc_long %>%
+  group_by(Muestra, Desierto, Categoría) %>%
+  summarise(
+    Category_total_abundance = sum(Abundancia, na.rm = TRUE),
+    n_functions_in_category = n_distinct(Funcion),
+    .groups = "drop"
+  )
+
+category_sample_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "tables",
+  "07_category_total_abundance_by_sample.tsv"
+)
+
+readr::write_tsv(category_sample_abundance, category_sample_file)
+
+cat("\nAbundancia total por muestra y categoría:\n")
+print(head(category_sample_abundance, 20))
+
+# 7.4 Resumen para barras --------------------------------------------------
+
+bar_summary_es <- category_sample_abundance %>%
+  group_by(Categoría, Desierto) %>%
+  summarise(
+    n_muestras = n_distinct(Muestra),
+    mean_abundance = mean(Category_total_abundance, na.rm = TRUE),
+    sd_abundance = sd(Category_total_abundance, na.rm = TRUE),
+    se_abundance = sd_abundance / sqrt(n_muestras),
+    median_abundance = median(Category_total_abundance, na.rm = TRUE),
+    min_abundance = min(Category_total_abundance, na.rm = TRUE),
+    max_abundance = max(Category_total_abundance, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  left_join(
+    test_resultados %>%
+      select(Categoría, p.adj, Significancia),
+    by = "Categoría"
+  ) %>%
+  mutate(
+    Categoría = factor(Categoría, levels = orden_categorias_es),
+    Desierto = factor(Desierto, levels = c("CC", "VG"))
+  ) %>%
+  arrange(Categoría, Desierto)
+
+bar_summary_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "tables",
+  "07_barplot_summary_spanish.tsv"
+)
+
+readr::write_tsv(bar_summary_es, bar_summary_file)
+
+cat("\nResumen para gráfico de barras:\n")
+print(bar_summary_es)
+
+# 7.5 Posiciones para asteriscos -------------------------------------------
+
+bar_significance_es <- bar_summary_es %>%
+  group_by(Categoría) %>%
+  summarise(
+    ymax = max(mean_abundance + se_abundance, na.rm = TRUE),
+    p.adj = first(p.adj),
+    Significancia = first(Significancia),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    y_position = ymax * 1.12,
+    label = case_when(
+      p.adj <= 0.001 ~ "***",
+      p.adj <= 0.01 ~ "**",
+      p.adj <= 0.05 ~ "*",
+      TRUE ~ ""
+    ),
+    Categoría = factor(Categoría, levels = orden_categorias_es)
+  )
+
+bar_significance_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "tables",
+  "07_barplot_significance_positions_spanish.tsv"
+)
+
+readr::write_tsv(bar_significance_es, bar_significance_file)
+
+cat("\nPosiciones de asteriscos para gráfico de barras:\n")
+print(bar_significance_es)
+
+# 7.6 Diagnósticos ---------------------------------------------------------
+
+bar_diagnostics <- tibble(
+  diagnostic_item = c(
+    "Número de filas en metacyc_long",
+    "Número de muestras",
+    "Número de categorías",
+    "Número esperado de filas en category_sample_abundance: 18 muestras x 18 categorías",
+    "Número observado de filas en category_sample_abundance",
+    "Número esperado de filas en bar_summary_es: 18 categorías x 2 desiertos",
+    "Número observado de filas en bar_summary_es",
+    "Todas las categorías tienen CC y VG",
+    "Todas las categorías tienen 9 muestras por desierto",
+    "Se reutilizan p.adj del Bloque 4",
+    "No se recalculó Wilcoxon en este bloque"
+  ),
+  value = c(
+    as.character(nrow(metacyc_long)),
+    as.character(length(unique(metacyc_long$Muestra))),
+    as.character(length(unique(metacyc_long$Categoría))),
+    as.character(18 * 18),
+    as.character(nrow(category_sample_abundance)),
+    as.character(18 * 2),
+    as.character(nrow(bar_summary_es)),
+    as.character(all(as.data.frame(table(bar_summary_es$Categoría))$Freq == 2)),
+    as.character(all(bar_summary_es$n_muestras == 9)),
+    "TRUE",
+    "TRUE"
+  )
+)
+
+bar_diagnostics_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "07_barplot_data_diagnostics.tsv"
+)
+
+readr::write_tsv(bar_diagnostics, bar_diagnostics_file)
+
+cat("\nDiagnóstico de datos para barras:\n")
+print(bar_diagnostics)
+
+# 7.7 Guardar objeto RDS ---------------------------------------------------
+
+block7_objects_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "07_barplot_data_preparation.rds"
+)
+
+saveRDS(
+  list(
+    category_sample_abundance = category_sample_abundance,
+    bar_summary_es = bar_summary_es,
+    bar_significance_es = bar_significance_es,
+    bar_diagnostics = bar_diagnostics,
+    orden_categorias_es = orden_categorias_es,
+    colores_desierto = colores_desierto
+  ),
+  block7_objects_file
+)
+
+log_step(
+  bloque = "Bloque 7",
+  accion = "Guardado de datos preparados para gráfico de barras",
+  decision_tecnica = "Guardar abundancia total por muestra, resumen media ± SE y posiciones de significancia",
+  razon = "Permitir graficar en español e inglés sin recalcular los datos.",
+  resultado = block7_objects_file
+)
+
+# 7.8 Validaciones finales -------------------------------------------------
+
+validaciones_bloque7 <- tibble(
+  validacion = c(
+    "category_sample_abundance tiene 324 filas",
+    "bar_summary_es tiene 36 filas",
+    "bar_significance_es tiene 18 filas",
+    "Cada categoría tiene CC y VG",
+    "Cada categoría-desierto tiene 9 muestras",
+    "No hay NA en mean_abundance",
+    "No hay NA en se_abundance",
+    "No hay NA en p.adj",
+    "Objeto RDS existe"
+  ),
+  resultado = c(
+    nrow(category_sample_abundance) == 324,
+    nrow(bar_summary_es) == 36,
+    nrow(bar_significance_es) == 18,
+    all(as.data.frame(table(bar_summary_es$Categoría))$Freq == 2),
+    all(bar_summary_es$n_muestras == 9),
+    !any(is.na(bar_summary_es$mean_abundance)),
+    !any(is.na(bar_summary_es$se_abundance)),
+    !any(is.na(bar_summary_es$p.adj)),
+    file.exists(block7_objects_file)
+  )
+)
+
+validaciones_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "07_validaciones_bloque7.tsv"
+)
+
+readr::write_tsv(validaciones_bloque7, validaciones_file)
+
+cat("\n============================================================\n")
+cat("VALIDACIONES BLOQUE 7\n")
+cat("============================================================\n")
+print(validaciones_bloque7)
+
+if (any(!validaciones_bloque7$resultado)) {
+  stop(
+    "Una o más validaciones del Bloque 7 fallaron. Revisa results/qc/07_validaciones_bloque7.tsv."
+  )
+}
+
+cat("\n============================================================\n")
+cat("BLOQUE 7 COMPLETADO\n")
+cat("============================================================\n")
+cat("Tabla por muestra guardada en:\n")
+cat(category_sample_file, "\n\n")
+
+cat("Resumen para barras guardado en:\n")
+cat(bar_summary_file, "\n\n")
+
+cat("Posiciones de significancia guardadas en:\n")
+cat(bar_significance_file, "\n\n")
+
+cat("Objeto RDS guardado en:\n")
+cat(block7_objects_file, "\n\n")
+
+cat("Para avanzar necesito que me confirmes si todas las validaciones salieron TRUE.\n")
+```
+```{r}
+# ============================================================
+# BLOQUE 8. GRÁFICO DE BARRAS METACYC EN ESPAÑOL
+# Protocolo: Barras MetaCyc HUMAnN3
+# Modo: reproducibilidad estricta
+# ============================================================
+
+# Objetivo:
+# 1. Recuperar los datos preparados en el Bloque 7.
+# 2. Generar gráfico de barras por categoría funcional y desierto.
+# 3. Mostrar media ± error estándar de la abundancia total por muestra.
+# 4. Añadir asteriscos de significancia usando los p.adj del Bloque 4.
+# 5. Guardar JPG, PNG y PDF.
+#
+# Importante:
+# - No se recalcula Wilcoxon.
+# - No se recalculan p-valores.
+# - No se cambian transformaciones.
+# - No se cambian umbrales.
+# - Las barras representan variación entre muestras biológicas:
+#   9 muestras CC y 9 muestras VG por categoría.
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(ggplot2)
+  library(scales)
+})
+
+# 8.1 Rutas y objeto del Bloque 7 ------------------------------------------
+
+BASE_DIR <- "/Users/ale/Desktop/HUMAnN3"
+PROJECT_DIR <- file.path(BASE_DIR, "MetaCyc_violins_reproducible")
+
+block7_objects_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "07_barplot_data_preparation.rds"
+)
+
+if (!file.exists(block7_objects_file)) {
+  stop("No se encontró el objeto del Bloque 7. Corre primero el Bloque 7.")
+}
+
+block7 <- readRDS(block7_objects_file)
+
+bar_summary_es <- block7$bar_summary_es
+bar_significance_es <- block7$bar_significance_es
+orden_categorias_es <- block7$orden_categorias_es
+colores_desierto <- block7$colores_desierto
+
+log_file <- file.path(PROJECT_DIR, "results", "logs", "bitacora_automatica.tsv")
+
+log_step <- function(bloque, accion, decision_tecnica, razon, resultado = "OK") {
+  entrada <- tibble(
+    timestamp = as.character(Sys.time()),
+    bloque = bloque,
+    accion = accion,
+    decision_tecnica = decision_tecnica,
+    razon = razon,
+    resultado = resultado
+  )
+  readr::write_tsv(entrada, log_file, append = TRUE)
+}
+
+log_step(
+  bloque = "Bloque 8",
+  accion = "Inicio de gráfico de barras en español",
+  decision_tecnica = "Usar resumen media ± error estándar generado en Bloque 7",
+  razon = "Graficar abundancia total por categoría funcional considerando variación entre muestras biológicas.",
+  resultado = "Objeto del Bloque 7 recuperado correctamente"
+)
+
+# 8.2 Validaciones de entrada ----------------------------------------------
+
+required_bar_cols <- c(
+  "Categoría",
+  "Desierto",
+  "n_muestras",
+  "mean_abundance",
+  "sd_abundance",
+  "se_abundance",
+  "p.adj",
+  "Significancia"
+)
+
+required_sig_cols <- c(
+  "Categoría",
+  "ymax",
+  "y_position",
+  "label"
+)
+
+if (!all(required_bar_cols %in% colnames(bar_summary_es))) {
+  stop("bar_summary_es no contiene todas las columnas necesarias.")
+}
+
+if (!all(required_sig_cols %in% colnames(bar_significance_es))) {
+  stop("bar_significance_es no contiene todas las columnas necesarias.")
+}
+
+if (nrow(bar_summary_es) != 36) {
+  stop("bar_summary_es debe tener 36 filas: 18 categorías x 2 desiertos.")
+}
+
+if (nrow(bar_significance_es) != 18) {
+  stop("bar_significance_es debe tener 18 filas: una por categoría.")
+}
+
+if (!all(bar_summary_es$n_muestras == 9)) {
+  stop("Cada categoría-desierto debe tener 9 muestras.")
+}
+
+# 8.3 Preparar factores y etiquetas ----------------------------------------
+
+bar_summary_es <- bar_summary_es %>%
+  mutate(
+    Categoría = factor(Categoría, levels = orden_categorias_es),
+    Desierto = factor(Desierto, levels = c("CC", "VG"))
+  )
+
+bar_significance_es <- bar_significance_es %>%
+  mutate(
+    Categoría = factor(Categoría, levels = orden_categorias_es)
+  )
+
+# Para evitar textos vacíos innecesarios
+bar_significance_plot_es <- bar_significance_es %>%
+  filter(label != "")
+
+# 8.4 Diagnóstico del gráfico ----------------------------------------------
+
+barplot_diagnostics_es <- tibble(
+  diagnostic_item = c(
+    "Número de categorías",
+    "Número de desiertos",
+    "Número de filas en bar_summary_es",
+    "Número de categorías con asterisco",
+    "Barras representan",
+    "Error bars representan",
+    "Estadística usada para asteriscos",
+    "Corrección por múltiples comparaciones",
+    "Umbral de significancia"
+  ),
+  value = c(
+    as.character(length(unique(bar_summary_es$Categoría))),
+    as.character(length(unique(bar_summary_es$Desierto))),
+    as.character(nrow(bar_summary_es)),
+    as.character(nrow(bar_significance_plot_es)),
+    "Media de abundancia total por categoría funcional por muestra",
+    "Error estándar de la media",
+    "Wilcoxon rank-sum test del Bloque 4",
+    "Benjamini-Hochberg FDR",
+    "p.adj < 0.05"
+  )
+)
+
+barplot_diagnostics_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "08_barplot_diagnostics_spanish.tsv"
+)
+
+readr::write_tsv(barplot_diagnostics_es, barplot_diagnostics_file)
+
+cat("\nDiagnóstico del gráfico de barras en español:\n")
+print(barplot_diagnostics_es)
+
+# 8.5 Crear gráfico de barras en español -----------------------------------
+
+fig_bar_es <- ggplot(
+  bar_summary_es,
+  aes(
+    x = Desierto,
+    y = mean_abundance,
+    fill = Desierto
+  )
+) +
+  geom_col(
+    width = 0.72,
+    color = "gray25",
+    linewidth = 0.25,
+    alpha = 0.85
+  ) +
+  geom_errorbar(
+    aes(
+      ymin = pmax(mean_abundance - se_abundance, 0),
+      ymax = mean_abundance + se_abundance
+    ),
+    width = 0.18,
+    linewidth = 0.45,
+    color = "gray20"
+  ) +
+  geom_text(
+    data = bar_significance_plot_es,
+    aes(
+      x = 1.5,
+      y = y_position,
+      label = label
+    ),
+    inherit.aes = FALSE,
+    size = 5.2,
+    fontface = "bold"
+  ) +
+  scale_fill_manual(
+    values = colores_desierto
+  ) +
+  scale_y_continuous(
+    labels = function(x) format(x, scientific = FALSE, trim = TRUE),
+    expand = expansion(mult = c(0, 0.20))
+  ) +
+  facet_wrap(
+    ~ Categoría,
+    scales = "free_y",
+    ncol = 4
+  ) +
+  labs(
+    x = "Desierto",
+    y = "Abundancia total promedio por categoría",
+    caption = "Barras = media por muestra; líneas = error estándar. Asteriscos = Wilcoxon con corrección FDR-BH."
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    legend.position = "none",
+    strip.text = element_text(
+      face = "bold",
+      size = 10,
+      lineheight = 0.95
+    ),
+    axis.title.x = element_text(
+      size = 18,
+      margin = margin(t = 12)
+    ),
+    axis.title.y = element_text(
+      size = 18,
+      margin = margin(r = 12)
+    ),
+    axis.text.x = element_text(
+      size = 13,
+      angle = 45,
+      hjust = 1
+    ),
+    axis.text.y = element_text(size = 12),
+    plot.caption = element_text(
+      size = 10,
+      hjust = 0
+    ),
+    panel.grid.minor = element_line(linewidth = 0.20),
+    panel.grid.major = element_line(linewidth = 0.32),
+    panel.spacing = unit(1.05, "lines"),
+    plot.margin = margin(14, 14, 14, 14)
+  )
+
+print(fig_bar_es)
+
+# 8.6 Guardar figura -------------------------------------------------------
+
+fig_jpg_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "figures",
+  "spanish_exact",
+  "08_barplot_metacyc_abundancia_por_categoria_espanol.jpg"
+)
+
+fig_png_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "figures",
+  "spanish_exact",
+  "08_barplot_metacyc_abundancia_por_categoria_espanol.png"
+)
+
+fig_pdf_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "figures",
+  "spanish_exact",
+  "08_barplot_metacyc_abundancia_por_categoria_espanol.pdf"
+)
+
+ggsave(
+  filename = fig_jpg_file,
+  plot = fig_bar_es,
+  width = 16,
+  height = 10,
+  dpi = 300
+)
+
+ggsave(
+  filename = fig_png_file,
+  plot = fig_bar_es,
+  width = 16,
+  height = 10,
+  dpi = 300
+)
+
+ggsave(
+  filename = fig_pdf_file,
+  plot = fig_bar_es,
+  width = 16,
+  height = 10,
+  device = cairo_pdf
+)
+
+log_step(
+  bloque = "Bloque 8",
+  accion = "Guardado de gráfico de barras en español",
+  decision_tecnica = "Guardar JPG, PNG y PDF; barras = media ± SE por categoría y desierto",
+  razon = "Generar figura complementaria a los violines, más sintética para comparación entre desiertos.",
+  resultado = paste(fig_jpg_file, fig_png_file, fig_pdf_file, sep = " | ")
+)
+
+# 8.7 Caption en español ---------------------------------------------------
+
+caption_bar_es <- tibble(
+  figure = "Gráfico de barras MetaCyc por categoría funcional",
+  caption = paste0(
+    "Abundancia total promedio de reacciones MetaCyc por categoría funcional en metagenomas de costras biológicas del suelo de Cuatro Ciénegas (CC) y Valle de Guadalupe (VG). ",
+    "Para cada muestra, las abundancias de las reacciones asignadas a una misma categoría funcional fueron sumadas; las barras representan la media por desierto y las líneas el error estándar de la media. ",
+    "Los asteriscos indican diferencias significativas entre desiertos de acuerdo con pruebas de Wilcoxon rank-sum realizadas por categoría funcional y corregidas por comparaciones múltiples mediante Benjamini-Hochberg FDR: * p.ajustada < 0.05, ** p.ajustada < 0.01, *** p.ajustada < 0.001."
+  )
+)
+
+caption_tsv_file <- file.path(
+  PROJECT_DIR,
+  "docs",
+  "08_barplot_caption_spanish.tsv"
+)
+
+caption_txt_file <- file.path(
+  PROJECT_DIR,
+  "docs",
+  "08_barplot_caption_spanish.txt"
+)
+
+readr::write_tsv(caption_bar_es, caption_tsv_file)
+writeLines(caption_bar_es$caption, caption_txt_file)
+
+cat("\nCaption sugerido en español:\n")
+cat(caption_bar_es$caption, "\n")
+
+# 8.8 Guardar objeto RDS ---------------------------------------------------
+
+block8_objects_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "08_barplot_spanish.rds"
+)
+
+saveRDS(
+  list(
+    bar_summary_es = bar_summary_es,
+    bar_significance_es = bar_significance_es,
+    bar_significance_plot_es = bar_significance_plot_es,
+    barplot_diagnostics_es = barplot_diagnostics_es,
+    fig_bar_es = fig_bar_es,
+    caption_bar_es = caption_bar_es,
+    colores_desierto = colores_desierto,
+    orden_categorias_es = orden_categorias_es
+  ),
+  block8_objects_file
+)
+
+# 8.9 Validaciones finales -------------------------------------------------
+
+validaciones_bloque8 <- tibble(
+  validacion = c(
+    "Figura JPG existe",
+    "Figura PNG existe",
+    "Figura PDF existe",
+    "Caption TSV existe",
+    "Caption TXT existe",
+    "Objeto RDS existe",
+    "Figura usa 18 categorías",
+    "Figura usa 2 desiertos",
+    "bar_summary_es tiene 36 filas",
+    "Cada categoría-desierto tiene 9 muestras",
+    "No hay NA en mean_abundance",
+    "No hay NA en se_abundance"
+  ),
+  resultado = c(
+    file.exists(fig_jpg_file),
+    file.exists(fig_png_file),
+    file.exists(fig_pdf_file),
+    file.exists(caption_tsv_file),
+    file.exists(caption_txt_file),
+    file.exists(block8_objects_file),
+    length(unique(bar_summary_es$Categoría)) == 18,
+    length(unique(bar_summary_es$Desierto)) == 2,
+    nrow(bar_summary_es) == 36,
+    all(bar_summary_es$n_muestras == 9),
+    !any(is.na(bar_summary_es$mean_abundance)),
+    !any(is.na(bar_summary_es$se_abundance))
+  )
+)
+
+validaciones_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "08_validaciones_bloque8.tsv"
+)
+
+readr::write_tsv(validaciones_bloque8, validaciones_file)
+
+cat("\n============================================================\n")
+cat("VALIDACIONES BLOQUE 8\n")
+cat("============================================================\n")
+print(validaciones_bloque8)
+
+if (any(!validaciones_bloque8$resultado)) {
+  stop(
+    "Una o más validaciones del Bloque 8 fallaron. Revisa results/qc/08_validaciones_bloque8.tsv."
+  )
+}
+
+cat("\n============================================================\n")
+cat("BLOQUE 8 COMPLETADO\n")
+cat("============================================================\n")
+cat("Figura JPG:\n")
+cat(fig_jpg_file, "\n\n")
+
+cat("Figura PNG:\n")
+cat(fig_png_file, "\n\n")
+
+cat("Figura PDF:\n")
+cat(fig_pdf_file, "\n\n")
+
+cat("Caption TXT:\n")
+cat(caption_txt_file, "\n\n")
+
+cat("Objeto RDS:\n")
+cat(block8_objects_file, "\n\n")
+
+cat("Cuando confirmes que la figura se ve bien, seguimos con el Bloque 9 en inglés para publicación.\n")
+```
+```{r}
+# ============================================================
+# BLOQUE 8B. GRÁFICO DE BARRAS EN INGLÉS, FORMATO PUBLICACIÓN
+# Formato: categorías en eje X + barras agrupadas CC/VG
+# ============================================================
+
+# Objetivo:
+# 1. Generar gráfico de barras como la figura de referencia:
+#    - Categorías funcionales en eje X
+#    - Barras agrupadas por desierto: CC y VG
+#    - Asteriscos de significancia sobre cada categoría
+#    - Sin facetas
+#    - Texto en inglés
+#    - Calidad de publicación
+#
+# 2. Mantener:
+#    - mismos datos preparados en Bloque 7
+#    - mismas medias ± error estándar
+#    - mismos p.adj del Bloque 4
+#    - mismos umbrales de significancia
+#
+# Este bloque NO recalcula Wilcoxon.
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(ggplot2)
+  library(scales)
+  library(stringr)
+})
+
+# 8B.1 Rutas y objetos -----------------------------------------------------
+
+BASE_DIR <- "/Users/ale/Desktop/HUMAnN3"
+PROJECT_DIR <- file.path(BASE_DIR, "MetaCyc_violins_reproducible")
+
+block7_objects_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "07_barplot_data_preparation.rds"
+)
+
+if (!file.exists(block7_objects_file)) {
+  stop("No se encontró el objeto del Bloque 7. Corre primero el Bloque 7.")
+}
+
+block7 <- readRDS(block7_objects_file)
+
+bar_summary_es <- block7$bar_summary_es
+bar_significance_es <- block7$bar_significance_es
+orden_categorias_es <- block7$orden_categorias_es
+colores_desierto <- block7$colores_desierto
+
+log_file <- file.path(PROJECT_DIR, "results", "logs", "bitacora_automatica.tsv")
+
+log_step <- function(bloque, accion, decision_tecnica, razon, resultado = "OK") {
+  entrada <- tibble(
+    timestamp = as.character(Sys.time()),
+    bloque = bloque,
+    accion = accion,
+    decision_tecnica = decision_tecnica,
+    razon = razon,
+    resultado = resultado
+  )
+  readr::write_tsv(entrada, log_file, append = TRUE)
+}
+
+log_step(
+  bloque = "Bloque 8B",
+  accion = "Inicio de gráfico de barras en inglés estilo publicación",
+  decision_tecnica = "Usar barras agrupadas por desierto con categorías funcionales en eje X",
+  razon = "Reproducir el formato de la figura de referencia en inglés y con calidad para revista científica.",
+  resultado = "Objeto del Bloque 7 recuperado correctamente"
+)
+
+# 8B.2 Diccionario de traducción -------------------------------------------
+
+category_translation <- tibble(
+  Categoría = c(
+    "Metabolismo del azufre",
+    "Estrés oxidativo y respuesta ambiental",
+    "Aminoácidos: degradación",
+    "Metabolismo del fósforo",
+    "Otras funciones / sin clasificar",
+    "Protección UV",
+    "Aminoácidos: biosíntesis",
+    "Nucleótidos",
+    "Biofilm y adhesión",
+    "Respiración y transporte de electrones",
+    "Polisacáridos y pared celular",
+    "Fermentación",
+    "Vitaminas y cofactores",
+    "Metabolismo del nitrógeno",
+    "Metabolismo de compuestos aromáticos",
+    "Fotosíntesis y pigmentos",
+    "Metabolismo del metano y C1",
+    "Glucólisis y metabolismo central"
+  ),
+  Functional_category = c(
+    "Sulfur metabolism",
+    "Oxidative stress and environmental response",
+    "Amino acid degradation",
+    "Phosphorus metabolism",
+    "Other or unclassified functions",
+    "UV protection",
+    "Amino acid biosynthesis",
+    "Nucleotides",
+    "Biofilm and adhesion",
+    "Respiration and electron transport",
+    "Cell wall and polysaccharides",
+    "Fermentation",
+    "Vitamins and cofactors",
+    "Nitrogen metabolism",
+    "Aromatic compound metabolism",
+    "Photosynthesis and pigments",
+    "Methane and C1 metabolism",
+    "Glycolysis and central metabolism"
+  )
+)
+
+# Orden tipo figura: categorías en una sola línea horizontal.
+# Aquí se usa orden alfabético en inglés para que sea legible y estándar.
+# Si prefieres el mismo orden de los violines, cambia sort(...) por orden_categorias_en.
+
+orden_categorias_en <- category_translation %>%
+  pull(Functional_category) %>%
+  sort()
+
+# 8B.3 Preparar tabla para barras ------------------------------------------
+
+bar_summary_en <- bar_summary_es %>%
+  left_join(category_translation, by = "Categoría") %>%
+  mutate(
+    Functional_category = factor(
+      Functional_category,
+      levels = orden_categorias_en
+    ),
+    Desert = factor(
+      Desierto,
+      levels = c("CC", "VG")
+    )
+  )
+
+bar_significance_en <- bar_significance_es %>%
+  left_join(category_translation, by = "Categoría") %>%
+  mutate(
+    Functional_category = factor(
+      Functional_category,
+      levels = orden_categorias_en
+    ),
+    label = case_when(
+      p.adj <= 0.001 ~ "***",
+      p.adj <= 0.01  ~ "**",
+      p.adj <= 0.05  ~ "*",
+      TRUE ~ ""
+    )
+  )
+
+bar_significance_plot_en <- bar_significance_en %>%
+  filter(label != "")
+
+# Posición vertical común para asteriscos por categoría
+# Se usa la media + error estándar más alta dentro de cada categoría.
+
+bar_significance_plot_en <- bar_summary_en %>%
+  group_by(Functional_category) %>%
+  summarise(
+    y_position = max(mean_abundance + se_abundance, na.rm = TRUE) * 1.08,
+    .groups = "drop"
+  ) %>%
+  left_join(
+    bar_significance_en %>%
+      select(Functional_category, p.adj, label),
+    by = "Functional_category"
+  ) %>%
+  filter(label != "")
+
+# 8B.4 Guardar tablas usadas para la figura --------------------------------
+
+bar_summary_en_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "tables",
+  "08B_barplot_summary_english_publication.tsv"
+)
+
+bar_significance_en_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "tables",
+  "08B_barplot_significance_english_publication.tsv"
+)
+
+readr::write_tsv(bar_summary_en, bar_summary_en_file)
+readr::write_tsv(bar_significance_plot_en, bar_significance_en_file)
+
+cat("\nResumen usado para gráfico de barras en inglés:\n")
+print(bar_summary_en)
+
+cat("\nAsteriscos usados para gráfico de barras en inglés:\n")
+print(bar_significance_plot_en)
+
+# 8B.5 Diagnóstico ---------------------------------------------------------
+
+barplot_diagnostics_en <- tibble(
+  diagnostic_item = c(
+    "Number of functional categories",
+    "Number of deserts",
+    "Rows in bar_summary_en",
+    "Bars represent",
+    "Error bars represent",
+    "Significance labels represent",
+    "Statistical test",
+    "Multiple-testing correction",
+    "Significance threshold",
+    "Wilcoxon recalculated in this block"
+  ),
+  value = c(
+    as.character(length(unique(bar_summary_en$Functional_category))),
+    as.character(length(unique(bar_summary_en$Desert))),
+    as.character(nrow(bar_summary_en)),
+    "Mean total MetaCyc reaction abundance per sample",
+    "Standard error of the mean",
+    "Adjusted p-value significance codes from Block 4",
+    "Wilcoxon rank-sum test",
+    "Benjamini-Hochberg FDR",
+    "Adjusted p-value < 0.05",
+    "No"
+  )
+)
+
+barplot_diagnostics_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "08B_barplot_diagnostics_english_publication.tsv"
+)
+
+readr::write_tsv(barplot_diagnostics_en, barplot_diagnostics_file)
+
+cat("\nDiagnóstico del gráfico de barras en inglés:\n")
+print(barplot_diagnostics_en)
+
+# 8B.6 Gráfico de barras en inglés -----------------------------------------
+
+# Nota:
+# Se mantiene fondo limpio, fuente grande, etiquetas rotadas y leyenda lateral.
+# El título se deja como título interno, similar a la figura de referencia.
+# Para manuscrito final, también puedes quitar el título y dejarlo solo en el caption.
+
+fig_bar_en_publication <- ggplot(
+  bar_summary_en,
+  aes(
+    x = Functional_category,
+    y = mean_abundance,
+    fill = Desert
+  )
+) +
+  geom_col(
+    position = position_dodge(width = 0.78),
+    width = 0.70,
+    color = "gray25",
+    linewidth = 0.25,
+    alpha = 0.90
+  ) +
+  geom_errorbar(
+    aes(
+      ymin = pmax(mean_abundance - se_abundance, 0),
+      ymax = mean_abundance + se_abundance
+    ),
+    position = position_dodge(width = 0.78),
+    width = 0.18,
+    linewidth = 0.45,
+    color = "gray20"
+  ) +
+  geom_text(
+    data = bar_significance_plot_en,
+    aes(
+      x = Functional_category,
+      y = y_position,
+      label = label
+    ),
+    inherit.aes = FALSE,
+    size = 5.3,
+    fontface = "bold"
+  ) +
+  scale_fill_manual(
+    values = colores_desierto,
+    name = "Desert"
+  ) +
+  scale_y_continuous(
+    labels = function(x) format(x, scientific = FALSE, trim = TRUE),
+    expand = expansion(mult = c(0, 0.16))
+  ) +
+  labs(
+    title = "Mean MetaCyc functional abundance by category and desert",
+    x = "Functional category",
+    y = "Mean total MetaCyc reaction abundance per sample"
+  ) +
+  theme_minimal(base_size = 15) +
+  theme(
+    plot.title = element_text(
+      face = "bold",
+      size = 18,
+      hjust = 0,
+      margin = margin(b = 12)
+    ),
+    axis.title.x = element_text(
+      size = 17,
+      margin = margin(t = 14)
+    ),
+    axis.title.y = element_text(
+      size = 17,
+      margin = margin(r = 12)
+    ),
+    axis.text.x = element_text(
+      size = 11.5,
+      angle = 55,
+      hjust = 1,
+      vjust = 1
+    ),
+    axis.text.y = element_text(
+      size = 12
+    ),
+    legend.title = element_text(
+      size = 13,
+      face = "bold"
+    ),
+    legend.text = element_text(
+      size = 12
+    ),
+    legend.position = "right",
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_line(
+      linewidth = 0.25,
+      color = "gray90"
+    ),
+    panel.grid.major.y = element_line(
+      linewidth = 0.35,
+      color = "gray88"
+    ),
+    plot.margin = margin(14, 20, 18, 14)
+  )
+
+print(fig_bar_en_publication)
+
+# 8B.7 Guardar figura ------------------------------------------------------
+
+fig_jpg_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "figures",
+  "english_publication",
+  "08B_barplot_metacyc_functional_abundance_PUBLICATION.jpg"
+)
+
+fig_png_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "figures",
+  "english_publication",
+  "08B_barplot_metacyc_functional_abundance_PUBLICATION.png"
+)
+
+fig_pdf_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "figures",
+  "english_publication",
+  "08B_barplot_metacyc_functional_abundance_PUBLICATION.pdf"
+)
+
+fig_tiff_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "figures",
+  "english_publication",
+  "08B_barplot_metacyc_functional_abundance_PUBLICATION.tiff"
+)
+
+ggsave(
+  filename = fig_jpg_file,
+  plot = fig_bar_en_publication,
+  width = 18,
+  height = 9,
+  dpi = 300
+)
+
+ggsave(
+  filename = fig_png_file,
+  plot = fig_bar_en_publication,
+  width = 18,
+  height = 9,
+  dpi = 300
+)
+
+ggsave(
+  filename = fig_pdf_file,
+  plot = fig_bar_en_publication,
+  width = 18,
+  height = 9,
+  device = cairo_pdf
+)
+
+ggsave(
+  filename = fig_tiff_file,
+  plot = fig_bar_en_publication,
+  width = 18,
+  height = 9,
+  dpi = 600,
+  compression = "lzw"
+)
+
+log_step(
+  bloque = "Bloque 8B",
+  accion = "Guardado de gráfico de barras en inglés estilo publicación",
+  decision_tecnica = "Guardar JPG, PNG, PDF y TIFF; gráfico de barras agrupadas CC/VG",
+  razon = "Generar versión final en inglés con formato de revista científica.",
+  resultado = paste(fig_pdf_file, fig_tiff_file, sep = " | ")
+)
+
+# 8B.8 Caption en inglés ---------------------------------------------------
+
+caption_bar_en <- tibble(
+  figure = "MetaCyc functional category bar plot",
+  caption = paste0(
+    "Mean total MetaCyc reaction abundance per functional category in biological soil crust metagenomes from Cuatro Ciénegas (CC) and Valle de Guadalupe (VG). ",
+    "For each sample, reaction abundances assigned to the same functional category were summed; bars represent the mean across samples within each desert, and error bars indicate the standard error of the mean. ",
+    "Asterisks indicate significant differences between deserts based on Wilcoxon rank-sum tests performed by functional category, with p-values adjusted for multiple comparisons using the Benjamini-Hochberg false discovery rate correction: ",
+    "* adjusted p < 0.05, ** adjusted p < 0.01, *** adjusted p < 0.001."
+  )
+)
+
+caption_tsv_file <- file.path(
+  PROJECT_DIR,
+  "docs",
+  "08B_barplot_caption_english_publication.tsv"
+)
+
+caption_txt_file <- file.path(
+  PROJECT_DIR,
+  "docs",
+  "08B_barplot_caption_english_publication.txt"
+)
+
+readr::write_tsv(caption_bar_en, caption_tsv_file)
+writeLines(caption_bar_en$caption, caption_txt_file)
+
+cat("\nCaption sugerido en inglés:\n")
+cat(caption_bar_en$caption, "\n")
+
+# 8B.9 Versión sin título para manuscrito ----------------------------------
+# Muchas revistas prefieren que la figura no tenga título interno,
+# porque el título va en el caption. Esta versión también se guarda.
+
+fig_bar_en_publication_no_title <- fig_bar_en_publication +
+  labs(title = NULL) +
+  theme(
+    plot.margin = margin(14, 20, 18, 14)
+  )
+
+fig_pdf_no_title_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "figures",
+  "english_publication",
+  "08B_barplot_metacyc_functional_abundance_PUBLICATION_no_title.pdf"
+)
+
+fig_tiff_no_title_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "figures",
+  "english_publication",
+  "08B_barplot_metacyc_functional_abundance_PUBLICATION_no_title.tiff"
+)
+
+ggsave(
+  filename = fig_pdf_no_title_file,
+  plot = fig_bar_en_publication_no_title,
+  width = 18,
+  height = 8.5,
+  device = cairo_pdf
+)
+
+ggsave(
+  filename = fig_tiff_no_title_file,
+  plot = fig_bar_en_publication_no_title,
+  width = 18,
+  height = 8.5,
+  dpi = 600,
+  compression = "lzw"
+)
+
+# 8B.10 Guardar objeto RDS -------------------------------------------------
+
+block8B_objects_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "08B_barplot_english_publication.rds"
+)
+
+saveRDS(
+  list(
+    bar_summary_en = bar_summary_en,
+    bar_significance_plot_en = bar_significance_plot_en,
+    barplot_diagnostics_en = barplot_diagnostics_en,
+    fig_bar_en_publication = fig_bar_en_publication,
+    fig_bar_en_publication_no_title = fig_bar_en_publication_no_title,
+    caption_bar_en = caption_bar_en,
+    category_translation = category_translation,
+    orden_categorias_en = orden_categorias_en
+  ),
+  block8B_objects_file
+)
+
+# 8B.11 Validaciones finales -----------------------------------------------
+
+validaciones_bloque8B <- tibble(
+  validacion = c(
+    "Figura JPG existe",
+    "Figura PNG existe",
+    "Figura PDF existe",
+    "Figura TIFF existe",
+    "Figura PDF sin título existe",
+    "Figura TIFF sin título existe",
+    "Caption TSV existe",
+    "Caption TXT existe",
+    "Objeto RDS existe",
+    "Figura usa 18 categorías",
+    "Figura usa 2 desiertos",
+    "bar_summary_en tiene 36 filas",
+    "Cada categoría-desierto tiene 9 muestras",
+    "No hay NA en mean_abundance",
+    "No hay NA en se_abundance",
+    "No se recalculó Wilcoxon"
+  ),
+  resultado = c(
+    file.exists(fig_jpg_file),
+    file.exists(fig_png_file),
+    file.exists(fig_pdf_file),
+    file.exists(fig_tiff_file),
+    file.exists(fig_pdf_no_title_file),
+    file.exists(fig_tiff_no_title_file),
+    file.exists(caption_tsv_file),
+    file.exists(caption_txt_file),
+    file.exists(block8B_objects_file),
+    length(unique(bar_summary_en$Functional_category)) == 18,
+    length(unique(bar_summary_en$Desert)) == 2,
+    nrow(bar_summary_en) == 36,
+    all(bar_summary_en$n_muestras == 9),
+    !any(is.na(bar_summary_en$mean_abundance)),
+    !any(is.na(bar_summary_en$se_abundance)),
+    TRUE
+  )
+)
+
+validaciones_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "08B_validaciones_barplot_english_publication.tsv"
+)
+
+readr::write_tsv(validaciones_bloque8B, validaciones_file)
+
+cat("\n============================================================\n")
+cat("VALIDACIONES BLOQUE 8B\n")
+cat("============================================================\n")
+print(validaciones_bloque8B)
+
+if (any(!validaciones_bloque8B$resultado)) {
+  stop(
+    "Una o más validaciones del Bloque 8B fallaron. Revisa results/qc/08B_validaciones_barplot_english_publication.tsv."
+  )
+}
+
+cat("\n============================================================\n")
+cat("BLOQUE 8B COMPLETADO\n")
+cat("============================================================\n")
+cat("Figura PDF con título:\n")
+cat(fig_pdf_file, "\n\n")
+
+cat("Figura TIFF con título:\n")
+cat(fig_tiff_file, "\n\n")
+
+cat("Figura PDF sin título:\n")
+cat(fig_pdf_no_title_file, "\n\n")
+
+cat("Figura TIFF sin título:\n")
+cat(fig_tiff_no_title_file, "\n\n")
+
+cat("Caption TXT:\n")
+cat(caption_txt_file, "\n\n")
+
+cat("Objeto RDS:\n")
+cat(block8B_objects_file, "\n\n")
+```
+```{r}
+# ============================================================
+# BLOQUE 8E. GRÁFICO DE BARRAS CON LEYENDA ESTADÍSTICA
+# Basado en Bloque 8D: mean(Abundancia) por categoría y desierto
+# ============================================================
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(ggplot2)
+  library(scales)
+})
+
+# 8E.1 Rutas y objetos -----------------------------------------------------
+
+BASE_DIR <- "/Users/ale/Desktop/HUMAnN3"
+PROJECT_DIR <- file.path(BASE_DIR, "MetaCyc_violins_reproducible")
+
+block8D_objects_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "08D_barplot_original_metric_english.rds"
+)
+
+if (!file.exists(block8D_objects_file)) {
+  stop("No se encontró el objeto del Bloque 8D. Corre primero el Bloque 8D.")
+}
+
+block8D <- readRDS(block8D_objects_file)
+
+bar_original_metric_en <- block8D$bar_original_metric_en
+bar_significance_positions_en <- block8D$bar_significance_positions_en
+
+# 8E.2 Colores -------------------------------------------------------------
+
+colores_desierto <- c(
+  "CC" = "#F8766D",
+  "VG" = "#00BFC4"
+)
+
+# 8E.3 Leyenda estadística para la figura ----------------------------------
+
+statistical_caption <- paste0(
+  "Bars represent mean MetaCyc reaction abundance per functional category and desert. ",
+  "Asterisks indicate categories significantly different between deserts based on Wilcoxon rank-sum tests. ",
+  "P-values were adjusted using the Benjamini-Hochberg false discovery rate correction. ",
+  "* adjusted p < 0.05. n = 9 metagenomes per desert."
+)
+
+# 8E.4 Figura con leyenda estadística interna ------------------------------
+
+fig_bar_original_en_stats <- ggplot(
+  bar_original_metric_en,
+  aes(
+    x = Functional_category,
+    y = mean_abundance,
+    fill = Desert
+  )
+) +
+  geom_col(
+    position = position_dodge(width = 0.78),
+    width = 0.72,
+    alpha = 0.90
+  ) +
+  geom_text(
+    data = bar_significance_positions_en,
+    aes(
+      x = Functional_category,
+      y = y_position,
+      label = label
+    ),
+    inherit.aes = FALSE,
+    size = 5.5,
+    fontface = "bold"
+  ) +
+  scale_fill_manual(
+    values = colores_desierto,
+    name = "Desert"
+  ) +
+  scale_y_continuous(
+    labels = function(x) format(x, scientific = FALSE, trim = TRUE),
+    expand = expansion(mult = c(0, 0.14))
+  ) +
+  labs(
+    title = "",
+    x = "Functional category",
+    y = "Mean abundance",
+    caption = statistical_caption
+  ) +
+  theme_minimal(base_size = 15) +
+  theme(
+    plot.title = element_text(
+      face = "bold",
+      size = 18,
+      hjust = 0,
+      margin = margin(b = 12)
+    ),
+    axis.title.x = element_text(
+      size = 17,
+      margin = margin(t = 14)
+    ),
+    axis.title.y = element_text(
+      size = 17,
+      margin = margin(r = 12)
+    ),
+    axis.text.x = element_text(
+      size = 11.5,
+      angle = 55,
+      hjust = 1,
+      vjust = 1
+    ),
+    axis.text.y = element_text(size = 12),
+    legend.title = element_text(size = 13, face = "bold"),
+    legend.text = element_text(size = 12),
+    legend.position = "right",
+    plot.caption = element_text(
+      size = 10.5,
+      hjust = 0,
+      lineheight = 1.05,
+      margin = margin(t = 12)
+    ),
+    panel.grid.minor = element_blank(),
+    panel.grid.major.x = element_line(
+      linewidth = 0.25,
+      color = "gray90"
+    ),
+    panel.grid.major.y = element_line(
+      linewidth = 0.35,
+      color = "gray88"
+    ),
+    plot.margin = margin(14, 20, 24, 14)
+  )
+
+print(fig_bar_original_en_stats)
+
+# 8E.5 Versión sin título interno, pero con leyenda estadística -------------
+
+fig_bar_original_en_stats_no_title <- fig_bar_original_en_stats +
+  labs(title = NULL)
+
+# 8E.6 Guardar figuras -----------------------------------------------------
+
+fig_pdf_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "figures",
+  "english_publication",
+  "08E_barplot_original_metric_with_statistics_legend.pdf"
+)
+
+fig_tiff_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "figures",
+  "english_publication",
+  "08E_barplot_original_metric_with_statistics_legend.tiff"
+)
+
+fig_png_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "figures",
+  "english_publication",
+  "08E_barplot_original_metric_with_statistics_legend.png"
+)
+
+fig_jpg_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "figures",
+  "english_publication",
+  "08E_barplot_original_metric_with_statistics_legend.jpg"
+)
+
+fig_pdf_no_title_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "figures",
+  "english_publication",
+  "08E_barplot_original_metric_with_statistics_legend_no_title.pdf"
+)
+
+fig_tiff_no_title_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "figures",
+  "english_publication",
+  "08E_barplot_original_metric_with_statistics_legend_no_title.tiff"
+)
+
+ggsave(
+  filename = fig_pdf_file,
+  plot = fig_bar_original_en_stats,
+  width = 18,
+  height = 9.3,
+  device = cairo_pdf
+)
+
+ggsave(
+  filename = fig_tiff_file,
+  plot = fig_bar_original_en_stats,
+  width = 18,
+  height = 9.3,
+  dpi = 600,
+  compression = "lzw"
+)
+
+ggsave(
+  filename = fig_png_file,
+  plot = fig_bar_original_en_stats,
+  width = 18,
+  height = 9.3,
+  dpi = 300
+)
+
+ggsave(
+  filename = fig_jpg_file,
+  plot = fig_bar_original_en_stats,
+  width = 18,
+  height = 9.3,
+  dpi = 300
+)
+
+ggsave(
+  filename = fig_pdf_no_title_file,
+  plot = fig_bar_original_en_stats_no_title,
+  width = 18,
+  height = 8.9,
+  device = cairo_pdf
+)
+
+ggsave(
+  filename = fig_tiff_no_title_file,
+  plot = fig_bar_original_en_stats_no_title,
+  width = 18,
+  height = 8.9,
+  dpi = 600,
+  compression = "lzw"
+)
+
+# 8E.7 Caption externo para manuscrito -------------------------------------
+
+caption_bar_stats <- tibble(
+  figure = "Mean MetaCyc abundance by functional category and desert",
+  caption = paste0(
+    "Mean MetaCyc reaction abundance by functional category in biological soil crust metagenomes from Cuatro Ciénegas (CC) and Valle de Guadalupe (VG). ",
+    "Asterisks indicate functional categories with significant differences between deserts according to Wilcoxon rank-sum tests. ",
+    "P-values were adjusted for multiple comparisons using the Benjamini-Hochberg false discovery rate correction. ",
+    "Asterisks denote adjusted p < 0.05. ",
+    "Each desert included nine metagenomic samples."
+  )
+)
+
+caption_txt_file <- file.path(
+  PROJECT_DIR,
+  "docs",
+  "08E_caption_barplot_with_statistics_legend_english.txt"
+)
+
+caption_tsv_file <- file.path(
+  PROJECT_DIR,
+  "docs",
+  "08E_caption_barplot_with_statistics_legend_english.tsv"
+)
+
+writeLines(caption_bar_stats$caption, caption_txt_file)
+readr::write_tsv(caption_bar_stats, caption_tsv_file)
+
+cat("\nCaption externo para manuscrito:\n")
+cat(caption_bar_stats$caption, "\n")
+
+# 8E.8 Guardar objeto RDS --------------------------------------------------
+
+block8E_objects_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "08E_barplot_original_metric_with_statistics_legend.rds"
+)
+
+saveRDS(
+  list(
+    bar_original_metric_en = bar_original_metric_en,
+    bar_significance_positions_en = bar_significance_positions_en,
+    fig_bar_original_en_stats = fig_bar_original_en_stats,
+    fig_bar_original_en_stats_no_title = fig_bar_original_en_stats_no_title,
+    statistical_caption = statistical_caption,
+    caption_bar_stats = caption_bar_stats
+  ),
+  block8E_objects_file
+)
+
+# 8E.9 Validaciones --------------------------------------------------------
+
+validaciones_bloque8E <- tibble(
+  validacion = c(
+    "Figura PDF con leyenda estadística existe",
+    "Figura TIFF con leyenda estadística existe",
+    "Figura PNG con leyenda estadística existe",
+    "Figura JPG con leyenda estadística existe",
+    "Figura PDF sin título existe",
+    "Figura TIFF sin título existe",
+    "Caption externo TXT existe",
+    "Objeto RDS existe",
+    "La leyenda menciona Wilcoxon",
+    "La leyenda menciona Benjamini-Hochberg FDR",
+    "La leyenda menciona adjusted p < 0.05",
+    "No se recalcularon estadísticos"
+  ),
+  resultado = c(
+    file.exists(fig_pdf_file),
+    file.exists(fig_tiff_file),
+    file.exists(fig_png_file),
+    file.exists(fig_jpg_file),
+    file.exists(fig_pdf_no_title_file),
+    file.exists(fig_tiff_no_title_file),
+    file.exists(caption_txt_file),
+    file.exists(block8E_objects_file),
+    str_detect(statistical_caption, "Wilcoxon"),
+    str_detect(statistical_caption, "Benjamini-Hochberg"),
+    str_detect(statistical_caption, "adjusted p < 0.05"),
+    TRUE
+  )
+)
+
+validaciones_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "08E_validaciones_barplot_with_statistics_legend.tsv"
+)
+
+readr::write_tsv(validaciones_bloque8E, validaciones_file)
+
+cat("\n============================================================\n")
+cat("VALIDACIONES BLOQUE 8E\n")
+cat("============================================================\n")
+print(validaciones_bloque8E)
+
+if (any(!validaciones_bloque8E$resultado)) {
+  stop("Una o más validaciones del Bloque 8E fallaron.")
+}
+
+cat("\n============================================================\n")
+cat("BLOQUE 8E COMPLETADO\n")
+cat("============================================================\n")
+cat("Figura TIFF con leyenda estadística:\n")
+cat(fig_tiff_file, "\n\n")
+
+cat("Figura TIFF sin título:\n")
+cat(fig_tiff_no_title_file, "\n\n")
+
+cat("Caption externo:\n")
+cat(caption_txt_file, "\n\n")
+```
+```{r}
+# ============================================================
+# BLOQUE 9. CIERRE DEL PROTOCOLO Y REPORTE DE REPRODUCIBILIDAD
+# Protocolo: MetaCyc abundance violins and barplots
+# Modo: reproducibilidad estricta
+# ============================================================
+
+# Objetivo:
+# 1. Cerrar formalmente el protocolo.
+# 2. Registrar archivos usados.
+# 3. Registrar pasos ejecutados.
+# 4. Registrar validaciones disponibles.
+# 5. Registrar figuras y tablas generadas.
+# 6. Guardar sessionInfo().
+# 7. Crear un reporte final en TXT y TSV.
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+})
+
+# 9.1 Rutas principales ----------------------------------------------------
+
+BASE_DIR <- "/Users/ale/Desktop/HUMAnN3"
+PROJECT_DIR <- file.path(BASE_DIR, "MetaCyc_violins_reproducible")
+
+log_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "logs",
+  "bitacora_automatica.tsv"
+)
+
+log_step <- function(bloque, accion, decision_tecnica, razon, resultado = "OK") {
+  entrada <- tibble(
+    timestamp = as.character(Sys.time()),
+    bloque = bloque,
+    accion = accion,
+    decision_tecnica = decision_tecnica,
+    razon = razon,
+    resultado = resultado
+  )
+  readr::write_tsv(entrada, log_file, append = TRUE)
+}
+
+log_step(
+  bloque = "Bloque 9",
+  accion = "Cierre del protocolo",
+  decision_tecnica = "Crear reporte final de reproducibilidad",
+  razon = "Documentar archivos usados, pasos ejecutados, validaciones, salidas y ambiente de R.",
+  resultado = "Inicio correcto"
+)
+
+# 9.2 Leer archivos seleccionados ------------------------------------------
+
+selected_files_file <- file.path(
+  PROJECT_DIR,
+  "metadata",
+  "00B_selected_input_files.tsv"
+)
+
+if (file.exists(selected_files_file)) {
+  selected_files <- readr::read_tsv(
+    selected_files_file,
+    show_col_types = FALSE
+  )
+} else {
+  selected_files <- tibble(
+    warning = "No se encontró 00B_selected_input_files.tsv"
+  )
+}
+
+# 9.3 Leer bitácora --------------------------------------------------------
+
+if (file.exists(log_file)) {
+  bitacora <- readr::read_tsv(
+    log_file,
+    show_col_types = FALSE
+  )
+} else {
+  bitacora <- tibble(
+    warning = "No se encontró bitácora automática"
+  )
+}
+
+# 9.4 Compilar validaciones ------------------------------------------------
+
+validation_files <- list.files(
+  path = file.path(PROJECT_DIR, "results", "qc"),
+  pattern = "validaciones|validaciones_|_validaciones",
+  recursive = TRUE,
+  full.names = TRUE
+)
+
+validation_summary <- purrr::map_dfr(
+  validation_files,
+  function(x) {
+    tabla <- readr::read_tsv(x, show_col_types = FALSE)
+    
+    if (!"resultado" %in% colnames(tabla)) {
+      return(
+        tibble(
+          validation_file = basename(x),
+          n_validations = NA_integer_,
+          n_TRUE = NA_integer_,
+          n_FALSE = NA_integer_,
+          all_TRUE = NA
+        )
+      )
+    }
+    
+    tibble(
+      validation_file = basename(x),
+      n_validations = nrow(tabla),
+      n_TRUE = sum(tabla$resultado == TRUE, na.rm = TRUE),
+      n_FALSE = sum(tabla$resultado == FALSE, na.rm = TRUE),
+      all_TRUE = all(tabla$resultado == TRUE, na.rm = TRUE)
+    )
+  }
+)
+
+validation_summary_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "09_final_validation_summary.tsv"
+)
+
+readr::write_tsv(validation_summary, validation_summary_file)
+
+# 9.5 Registrar figuras generadas ------------------------------------------
+
+figure_files <- list.files(
+  path = file.path(PROJECT_DIR, "results", "figures"),
+  recursive = TRUE,
+  full.names = TRUE,
+  pattern = "\\.(jpg|jpeg|png|pdf|tiff)$",
+  ignore.case = TRUE
+)
+
+figure_registry <- tibble(
+  file = figure_files,
+  file_name = basename(figure_files),
+  folder = dirname(figure_files),
+  extension = tools::file_ext(figure_files),
+  file_size_bytes = as.numeric(file.info(figure_files)$size),
+  md5 = as.character(tools::md5sum(figure_files))
+)
+
+figure_registry_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "09_final_figure_registry.tsv"
+)
+
+readr::write_tsv(figure_registry, figure_registry_file)
+
+# 9.6 Registrar tablas generadas -------------------------------------------
+
+table_files <- list.files(
+  path = file.path(PROJECT_DIR, "results", "tables"),
+  recursive = TRUE,
+  full.names = TRUE,
+  pattern = "\\.(tsv|csv)$",
+  ignore.case = TRUE
+)
+
+statistics_files <- list.files(
+  path = file.path(PROJECT_DIR, "results", "statistics"),
+  recursive = TRUE,
+  full.names = TRUE,
+  pattern = "\\.(tsv|csv)$",
+  ignore.case = TRUE
+)
+
+all_table_files <- c(table_files, statistics_files)
+
+table_registry <- tibble(
+  file = all_table_files,
+  file_name = basename(all_table_files),
+  folder = dirname(all_table_files),
+  extension = tools::file_ext(all_table_files),
+  file_size_bytes = as.numeric(file.info(all_table_files)$size),
+  md5 = as.character(tools::md5sum(all_table_files))
+)
+
+table_registry_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "09_final_table_registry.tsv"
+)
+
+readr::write_tsv(table_registry, table_registry_file)
+
+# 9.7 Guardar sessionInfo --------------------------------------------------
+
+session_info_file <- file.path(
+  PROJECT_DIR,
+  "metadata",
+  "09_final_sessionInfo.txt"
+)
+
+writeLines(
+  capture.output(sessionInfo()),
+  session_info_file
+)
+
+# 9.8 Crear resumen final del protocolo ------------------------------------
+
+final_summary <- tibble(
+  item = c(
+    "Project directory",
+    "Base directory",
+    "Main MetaCyc input",
+    "Protocol status",
+    "Main data table",
+    "Main transformations",
+    "Statistical test",
+    "Multiple-testing correction",
+    "Significance threshold",
+    "Main Spanish violin figure",
+    "Main English violin figure",
+    "Main English barplot original metric",
+    "English barplot with statistical legend",
+    "Validation summary",
+    "Figure registry",
+    "Table registry",
+    "Session information",
+    "Automatic log"
+  ),
+  value = c(
+    PROJECT_DIR,
+    BASE_DIR,
+    if ("selected_path" %in% colnames(selected_files)) {
+      selected_files %>%
+        filter(filename == "rxn-cpm-metacyc.tsv") %>%
+        pull(selected_path)
+    } else {
+      "Not available"
+    },
+    "Completed",
+    "rxn-cpm-metacyc.tsv",
+    "Removal of internal Sample/Type rows; sample renaming; functional category assignment by keyword matching; long-format abundance table",
+    "Wilcoxon rank-sum test by functional category",
+    "Benjamini-Hochberg false discovery rate correction",
+    "Adjusted p-value < 0.05",
+    file.path(PROJECT_DIR, "results", "figures", "spanish_exact", "05_violin_abundancia_por_categoria_espanol.pdf"),
+    file.path(PROJECT_DIR, "results", "figures", "english_publication", "06B_violin_metacyc_functional_categories_PUBLICATION_FINAL.tiff"),
+    file.path(PROJECT_DIR, "results", "figures", "english_publication", "08D_barplot_original_metric_english_no_title.tiff"),
+    file.path(PROJECT_DIR, "results", "figures", "english_publication", "08E_barplot_original_metric_with_statistics_legend_no_title.tiff"),
+    validation_summary_file,
+    figure_registry_file,
+    table_registry_file,
+    session_info_file,
+    log_file
+  )
+)
+
+final_summary_file <- file.path(
+  PROJECT_DIR,
+  "docs",
+  "09_final_reproducibility_summary.tsv"
+)
+
+readr::write_tsv(final_summary, final_summary_file)
+
+# 9.9 Crear reporte final en texto -----------------------------------------
+
+final_report_txt <- file.path(
+  PROJECT_DIR,
+  "docs",
+  "09_final_reproducibility_report.txt"
+)
+
+report_lines <- c(
+  "FINAL REPRODUCIBILITY REPORT",
+  "MetaCyc abundance violins and barplots",
+  "============================================================",
+  "",
+  paste0("Date: ", Sys.time()),
+  paste0("Project directory: ", PROJECT_DIR),
+  paste0("Base directory: ", BASE_DIR),
+  "",
+  "Protocol status: COMPLETED",
+  "",
+  "Main input:",
+  if ("selected_path" %in% colnames(selected_files)) {
+    selected_files %>%
+      filter(filename == "rxn-cpm-metacyc.tsv") %>%
+      pull(selected_path)
+  } else {
+    "Input file registry not available"
+  },
+  "",
+  "Main analytical decisions:",
+  "- The MetaCyc reaction abundance table rxn-cpm-metacyc.tsv was used as the main input.",
+  "- Internal HUMAnN3 rows Sample and Type were removed, following the original protocol.",
+  "- Samples were renamed to biological sample identifiers ending in _CC or _VG.",
+  "- Functional categories were assigned using keyword-based matching of MetaCyc reaction names.",
+  "- Wilcoxon rank-sum tests were performed by functional category.",
+  "- P-values were adjusted using the Benjamini-Hochberg false discovery rate correction.",
+  "- Significance was defined as adjusted p-value < 0.05.",
+  "- Barplot version 8D reproduces the original metric: mean(Abundancia) by functional category and desert.",
+  "- Barplot version 8E adds an explicit statistical legend for publication.",
+  "",
+  "Key output figures:",
+  paste0("- Spanish violin figure: ", file.path(PROJECT_DIR, "results", "figures", "spanish_exact", "05_violin_abundancia_por_categoria_espanol.pdf")),
+  paste0("- English publication violin figure: ", file.path(PROJECT_DIR, "results", "figures", "english_publication", "06B_violin_metacyc_functional_categories_PUBLICATION_FINAL.tiff")),
+  paste0("- English barplot original metric: ", file.path(PROJECT_DIR, "results", "figures", "english_publication", "08D_barplot_original_metric_english_no_title.tiff")),
+  paste0("- English barplot with statistical legend: ", file.path(PROJECT_DIR, "results", "figures", "english_publication", "08E_barplot_original_metric_with_statistics_legend_no_title.tiff")),
+  "",
+  "Documentation files:",
+  paste0("- Final validation summary: ", validation_summary_file),
+  paste0("- Final figure registry: ", figure_registry_file),
+  paste0("- Final table registry: ", table_registry_file),
+  paste0("- Session information: ", session_info_file),
+  paste0("- Automatic log: ", log_file),
+  "",
+  "Validation overview:",
+  paste0(
+    "- Validation files detected: ",
+    length(validation_files)
+  ),
+  paste0(
+    "- Validation files with all TRUE: ",
+    sum(validation_summary$all_TRUE == TRUE, na.rm = TRUE)
+  ),
+  paste0(
+    "- Validation files with at least one FALSE: ",
+    sum(validation_summary$all_TRUE == FALSE, na.rm = TRUE)
+  ),
+  "",
+  "End of protocol."
+)
+
+writeLines(report_lines, final_report_txt)
+
+# 9.10 Guardar objeto final RDS --------------------------------------------
+
+final_object_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "objects",
+  "09_final_reproducibility_report.rds"
+)
+
+saveRDS(
+  list(
+    selected_files = selected_files,
+    bitacora = bitacora,
+    validation_summary = validation_summary,
+    figure_registry = figure_registry,
+    table_registry = table_registry,
+    final_summary = final_summary,
+    report_lines = report_lines
+  ),
+  final_object_file
+)
+
+# 9.11 Validaciones del cierre ---------------------------------------------
+
+validaciones_bloque9 <- tibble(
+  validacion = c(
+    "Reporte final TXT existe",
+    "Resumen final TSV existe",
+    "SessionInfo existe",
+    "Registro final de figuras existe",
+    "Registro final de tablas existe",
+    "Resumen final de validaciones existe",
+    "Objeto final RDS existe",
+    "Bitácora automática existe"
+  ),
+  resultado = c(
+    file.exists(final_report_txt),
+    file.exists(final_summary_file),
+    file.exists(session_info_file),
+    file.exists(figure_registry_file),
+    file.exists(table_registry_file),
+    file.exists(validation_summary_file),
+    file.exists(final_object_file),
+    file.exists(log_file)
+  )
+)
+
+validaciones_file <- file.path(
+  PROJECT_DIR,
+  "results",
+  "qc",
+  "09_validaciones_cierre_protocolo.tsv"
+)
+
+readr::write_tsv(validaciones_bloque9, validaciones_file)
+
+log_step(
+  bloque = "Bloque 9",
+  accion = "Cierre final completado",
+  decision_tecnica = "Guardar reporte final, sessionInfo, registros de salidas y validaciones",
+  razon = "Dejar el análisis documentado y reproducible en el HTML y en archivos externos.",
+  resultado = final_report_txt
+)
+
+cat("\n============================================================\n")
+cat("BLOQUE 9 COMPLETADO: PROTOCOLO CERRADO\n")
+cat("============================================================\n\n")
+
+cat("Reporte final TXT:\n")
+cat(final_report_txt, "\n\n")
+
+cat("Resumen final TSV:\n")
+cat(final_summary_file, "\n\n")
+
+cat("SessionInfo:\n")
+cat(session_info_file, "\n\n")
+
+cat("Registro de figuras:\n")
+cat(figure_registry_file, "\n\n")
+
+cat("Registro de tablas:\n")
+cat(table_registry_file, "\n\n")
+
+cat("Validaciones del cierre:\n")
+print(validaciones_bloque9)
+
+cat("\nEstado general: PROTOCOLO COMPLETADO Y DOCUMENTADO.\n")
+```
+

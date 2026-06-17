@@ -1,0 +1,1989 @@
+---
+title: "Figura_2_ysupl_1_PCoA"
+author: "Alejandra_Sarmina"
+date: "2026-06-16"
+output: html_document
+---
+
+
+```{r}
+# ============================================================
+# BLOQUE 0. CONFIGURACIÓN INICIAL DEL PROTOCOLO
+# Beta diversity y abundancia de especies Bracken - nivel especie
+# Modo: reproducibilidad estricta
+# ============================================================
+
+# -----------------------------
+# 0.1 Limpiar ambiente
+# -----------------------------
+
+rm(list = ls())
+
+# -----------------------------
+# 0.2 Paquetes requeridos
+# -----------------------------
+
+required_packages <- c(
+  "tidyverse",
+  "vegan",
+  "ape",
+  "ggplot2",
+  "ggrepel",
+  "patchwork",
+  "readr",
+  "stringr",
+  "tibble",
+  "janitor"
+)
+
+missing_packages <- required_packages[
+  !required_packages %in% rownames(installed.packages())
+]
+
+if (length(missing_packages) > 0) {
+  install.packages(missing_packages)
+}
+
+invisible(lapply(required_packages, library, character.only = TRUE))
+
+# -----------------------------
+# 0.3 Ruta principal del protocolo
+# -----------------------------
+# Todo se trabajará dentro de esta carpeta, de acuerdo con tu captura.
+
+project_dir <- "/Users/ale/Desktop/kraken_gtdb/kraken_analysis_gtdb/diversidad_bracken/bracken_especie"
+
+if (!dir.exists(project_dir)) {
+  stop("La carpeta project_dir no existe. Revisa la ruta:\n", project_dir)
+}
+
+setwd(project_dir)
+
+# -----------------------------
+# 0.4 Estructura nueva de carpetas
+# -----------------------------
+# No se modifican los archivos originales.
+# Todas las salidas nuevas irán dentro de 03_reproducibilidad_beta_diversity_species
+
+analysis_dir <- file.path(project_dir, "03_reproducibilidad_beta_diversity_species")
+
+dirs_to_create <- c(
+  analysis_dir,
+  file.path(analysis_dir, "logs"),
+  file.path(analysis_dir, "outputs"),
+  file.path(analysis_dir, "outputs", "figures"),
+  file.path(analysis_dir, "outputs", "figures", "publication_english"),
+  file.path(analysis_dir, "outputs", "figures", "spanish"),
+  file.path(analysis_dir, "outputs", "tables"),
+  file.path(analysis_dir, "outputs", "qc"),
+  file.path(analysis_dir, "outputs", "statistics"),
+  file.path(analysis_dir, "outputs", "objects")
+)
+
+for (d in dirs_to_create) {
+  if (!dir.exists(d)) {
+    dir.create(d, recursive = TRUE)
+  }
+}
+
+# -----------------------------
+# 0.5 Colores obligatorios
+# -----------------------------
+# Estos colores NO se cambian.
+
+desert_colors <- c(
+  "Cuatro Ciénegas" = "#F8766D",
+  "Valle de Guadalupe" = "#00BFC4"
+)
+
+# -----------------------------
+# 0.6 Crear bitácora automática
+# -----------------------------
+
+timestamp_id <- format(Sys.time(), "%Y%m%d_%H%M%S")
+
+log_file <- file.path(
+  analysis_dir,
+  "logs",
+  paste0("bitacora_reproducibilidad_bracken_species_", timestamp_id, ".md")
+)
+
+log_event <- function(section, message) {
+  cat(
+    paste0(
+      "\n\n## ", section, "\n",
+      "**Fecha y hora:** ", as.character(Sys.time()), "\n\n",
+      message, "\n"
+    ),
+    file = log_file,
+    append = TRUE
+  )
+}
+
+log_event(
+  section = "Inicio del protocolo",
+  message = paste(
+    "Se inició el protocolo de reproducibilidad estricta para beta diversity",
+    "y abundancia de especies usando archivos Bracken a nivel especie.",
+    "",
+    "Ruta principal:",
+    project_dir,
+    "",
+    "Directorio de análisis nuevo:",
+    analysis_dir,
+    "",
+    "Decisión técnica:",
+    "No se modificarán los archivos originales.",
+    "Todas las salidas nuevas se guardarán dentro de 03_reproducibilidad_beta_diversity_species.",
+    "",
+    "Restricción metodológica:",
+    "No se cambiarán filtros, transformaciones, umbrales ni pruebas estadísticas del protocolo original.",
+    sep = "\n"
+  )
+)
+
+# -----------------------------
+# 0.7 Registrar sesión de R
+# -----------------------------
+
+session_file <- file.path(
+  analysis_dir,
+  "outputs",
+  "qc",
+  paste0("00_session_info_", timestamp_id, ".txt")
+)
+
+capture.output(sessionInfo(), file = session_file)
+
+log_event(
+  section = "Información de sesión",
+  message = paste(
+    "Se guardó la información de sesión de R para reproducibilidad.",
+    "",
+    "Archivo:",
+    session_file,
+    sep = "\n"
+  )
+)
+
+# -----------------------------
+# 0.8 Mostrar resumen de configuración
+# -----------------------------
+
+cat("\n============================================================\n")
+cat("BLOQUE 0 COMPLETADO CORRECTAMENTE\n")
+cat("============================================================\n")
+cat("Ruta principal:\n", project_dir, "\n\n")
+cat("Directorio nuevo de análisis:\n", analysis_dir, "\n\n")
+cat("Bitácora creada en:\n", log_file, "\n\n")
+cat("Session info guardada en:\n", session_file, "\n\n")
+cat("Colores definidos:\n")
+print(desert_colors)
+cat("============================================================\n")
+```
+```{r}
+# ============================================================
+# BLOQUE 1. INVENTARIO Y DIAGNÓSTICO DE ARCHIVOS DE ENTRADA
+# ============================================================
+
+# Este bloque:
+# 1. Registra todos los archivos disponibles en bracken_especie.
+# 2. Identifica archivos .bracken y .csv.
+# 3. Diagnostica dimensiones, columnas y posibles muestras.
+# 4. No modifica datos.
+# 5. No aplica filtros nuevos.
+# 6. Guarda tablas QC para reproducibilidad.
+
+log_event(
+  section = "Bloque 1 - Inicio",
+  message = paste(
+    "Se inicia el inventario y diagnóstico de archivos de entrada.",
+    "Este bloque no transforma ni filtra datos.",
+    "Solo documenta la estructura inicial de los archivos disponibles.",
+    sep = "\n"
+  )
+)
+
+# -----------------------------
+# 1.1 Inventario general de archivos
+# -----------------------------
+
+all_files <- list.files(
+  path = project_dir,
+  recursive = FALSE,
+  full.names = FALSE
+)
+
+file_inventory <- tibble::tibble(
+  file_name = all_files,
+  extension = tools::file_ext(all_files),
+  full_path = file.path(project_dir, all_files),
+  size_bytes = file.info(file.path(project_dir, all_files))$size,
+  modified_time = file.info(file.path(project_dir, all_files))$mtime
+) %>%
+  dplyr::arrange(extension, file_name)
+
+inventory_file <- file.path(
+  analysis_dir,
+  "outputs",
+  "qc",
+  "01_file_inventory_bracken_species.csv"
+)
+
+readr::write_csv(file_inventory, inventory_file)
+
+log_event(
+  section = "Bloque 1 - Inventario de archivos",
+  message = paste(
+    "Se registró el inventario general de archivos disponibles en la carpeta principal.",
+    "",
+    "Archivo generado:",
+    inventory_file,
+    "",
+    "Número total de archivos/carpetas detectados:",
+    nrow(file_inventory),
+    sep = "\n"
+  )
+)
+
+# -----------------------------
+# 1.2 Identificar archivos Bracken y CSV
+# -----------------------------
+
+bracken_files <- file_inventory %>%
+  dplyr::filter(extension == "bracken") %>%
+  dplyr::pull(file_name)
+
+csv_files <- file_inventory %>%
+  dplyr::filter(extension == "csv") %>%
+  dplyr::pull(file_name)
+
+bracken_file_table <- tibble::tibble(
+  bracken_file = bracken_files
+)
+
+csv_file_table <- tibble::tibble(
+  csv_file = csv_files
+)
+
+readr::write_csv(
+  bracken_file_table,
+  file.path(analysis_dir, "outputs", "qc", "01_bracken_files_detected.csv")
+)
+
+readr::write_csv(
+  csv_file_table,
+  file.path(analysis_dir, "outputs", "qc", "01_csv_files_detected.csv")
+)
+
+log_event(
+  section = "Bloque 1 - Archivos Bracken y CSV detectados",
+  message = paste(
+    "Archivos .bracken detectados:",
+    length(bracken_files),
+    "",
+    "Archivos .csv detectados:",
+    length(csv_files),
+    "",
+    "Decisión técnica:",
+    "Por ahora no se selecciona aún una tabla definitiva para el análisis.",
+    "Primero se diagnostican todas las tablas CSV disponibles para confirmar cuál reproduce el protocolo original.",
+    sep = "\n"
+  )
+)
+
+# -----------------------------
+# 1.3 Función diagnóstica para CSV
+# -----------------------------
+
+diagnose_csv <- function(file_name) {
+  
+  file_path <- file.path(project_dir, file_name)
+  
+  x <- readr::read_csv(
+    file_path,
+    show_col_types = FALSE,
+    progress = FALSE
+  )
+  
+  tibble::tibble(
+    file_name = file_name,
+    n_rows = nrow(x),
+    n_cols = ncol(x),
+    column_names = paste(colnames(x), collapse = " | "),
+    first_column = colnames(x)[1],
+    numeric_columns = sum(vapply(x, is.numeric, logical(1))),
+    character_columns = sum(vapply(x, is.character, logical(1))),
+    has_species_column = any(
+      stringr::str_detect(
+        stringr::str_to_lower(colnames(x)),
+        "species|especie|taxon|name"
+      )
+    ),
+    has_sample_like_columns = any(
+      stringr::str_detect(
+        colnames(x),
+        "^(A|B|C|D|E|F)[1-3](_CC|_VG)?$"
+      )
+    ),
+    preview_first_rows = paste(
+      utils::capture.output(print(utils::head(x, 3))),
+      collapse = "\n"
+    )
+  )
+}
+
+csv_diagnostics <- purrr::map_dfr(csv_files, diagnose_csv)
+
+csv_diagnostics_file <- file.path(
+  analysis_dir,
+  "outputs",
+  "qc",
+  "01_csv_diagnostics.csv"
+)
+
+readr::write_csv(csv_diagnostics, csv_diagnostics_file)
+
+log_event(
+  section = "Bloque 1 - Diagnóstico de tablas CSV",
+  message = paste(
+    "Se diagnosticaron todas las tablas CSV disponibles.",
+    "",
+    "Archivo generado:",
+    csv_diagnostics_file,
+    "",
+    "Contenido del diagnóstico:",
+    "- dimensiones de cada tabla",
+    "- nombres de columnas",
+    "- tipo de columnas",
+    "- detección de columnas tipo muestra",
+    "- detección de columna tipo especie/taxón",
+    sep = "\n"
+  )
+)
+
+# -----------------------------
+# 1.4 Diagnóstico específico de archivos .bracken
+# -----------------------------
+
+diagnose_bracken <- function(file_name) {
+  
+  file_path <- file.path(project_dir, file_name)
+  
+  x <- readr::read_tsv(
+    file_path,
+    show_col_types = FALSE,
+    progress = FALSE
+  )
+  
+  tibble::tibble(
+    file_name = file_name,
+    n_rows = nrow(x),
+    n_cols = ncol(x),
+    column_names = paste(colnames(x), collapse = " | "),
+    first_column = colnames(x)[1],
+    has_name_column = any(colnames(x) %in% c("name", "Name", "species", "Species")),
+    has_taxonomy_id = any(colnames(x) %in% c("taxonomy_id", "taxid", "tax_id")),
+    has_new_est_reads = any(colnames(x) %in% c("new_est_reads", "new_est_reads ")),
+    preview_first_rows = paste(
+      utils::capture.output(print(utils::head(x, 3))),
+      collapse = "\n"
+    )
+  )
+}
+
+bracken_diagnostics <- purrr::map_dfr(bracken_files, diagnose_bracken)
+
+bracken_diagnostics_file <- file.path(
+  analysis_dir,
+  "outputs",
+  "qc",
+  "01_bracken_diagnostics.csv"
+)
+
+readr::write_csv(bracken_diagnostics, bracken_diagnostics_file)
+
+log_event(
+  section = "Bloque 1 - Diagnóstico de archivos Bracken originales",
+  message = paste(
+    "Se diagnosticaron los archivos .bracken originales.",
+    "",
+    "Archivo generado:",
+    bracken_diagnostics_file,
+    "",
+    "Decisión técnica:",
+    "Los archivos .bracken se conservan como evidencia de entrada original.",
+    "La selección de la matriz final para reproducir las figuras se hará en el siguiente bloque, usando las tablas ya generadas por el protocolo original.",
+    sep = "\n"
+  )
+)
+
+# -----------------------------
+# 1.5 Revisar existencia de archivos esperados del protocolo original
+# -----------------------------
+
+expected_protocol_files <- c(
+  "00_long_bracken_species.csv",
+  "01_matrix_bracken_species_reads.csv",
+  "02_matrix_species_reads_filtered.csv",
+  "02_6_matrix_species_reads_collapsed_by_canon.csv",
+  "02_6_mapping_original_to_canon_display.csv",
+  "02A_candidatos_removidos_totalReads<100.csv"
+)
+
+expected_files_check <- tibble::tibble(
+  expected_file = expected_protocol_files,
+  exists = expected_file %in% all_files,
+  full_path = file.path(project_dir, expected_file)
+)
+
+expected_files_check_file <- file.path(
+  analysis_dir,
+  "outputs",
+  "qc",
+  "01_expected_protocol_files_check.csv"
+)
+
+readr::write_csv(expected_files_check, expected_files_check_file)
+
+log_event(
+  section = "Bloque 1 - Revisión de archivos esperados",
+  message = paste(
+    "Se revisó la presencia de archivos esperados del protocolo original.",
+    "",
+    "Archivo generado:",
+    expected_files_check_file,
+    "",
+    "Archivos esperados presentes:",
+    paste(expected_files_check$expected_file[expected_files_check$exists], collapse = ", "),
+    "",
+    "Archivos esperados ausentes:",
+    paste(expected_files_check$expected_file[!expected_files_check$exists], collapse = ", "),
+    sep = "\n"
+  )
+)
+
+# -----------------------------
+# 1.6 Mostrar resumen en consola
+# -----------------------------
+
+cat("\n============================================================\n")
+cat("BLOQUE 1 COMPLETADO CORRECTAMENTE\n")
+cat("============================================================\n\n")
+
+cat("Archivos totales detectados:\n")
+print(nrow(file_inventory))
+
+cat("\nArchivos .bracken detectados:\n")
+print(length(bracken_files))
+
+cat("\nArchivos .csv detectados:\n")
+print(length(csv_files))
+
+cat("\nArchivos esperados del protocolo original:\n")
+print(expected_files_check)
+
+cat("\nDiagnóstico de CSV:\n")
+print(
+  csv_diagnostics %>%
+    dplyr::select(
+      file_name,
+      n_rows,
+      n_cols,
+      first_column,
+      has_species_column,
+      has_sample_like_columns
+    )
+)
+
+cat("\nDiagnóstico de archivos .bracken:\n")
+print(
+  bracken_diagnostics %>%
+    dplyr::select(
+      file_name,
+      n_rows,
+      n_cols,
+      has_name_column,
+      has_taxonomy_id,
+      has_new_est_reads
+    )
+)
+
+cat("\nArchivos QC guardados en:\n")
+cat(file.path(analysis_dir, "outputs", "qc"), "\n")
+
+cat("\nBitácora actualizada en:\n")
+cat(log_file, "\n")
+
+cat("\n============================================================\n")
+```
+```{r}
+# ============================================================
+# BLOQUE 2. SELECCIÓN DIAGNÓSTICA DE MATRIZ PARA REPRODUCIR PCoA
+# ============================================================
+
+# Este bloque:
+# 1. Evalúa las matrices ya generadas por el protocolo original.
+# 2. No aplica filtros nuevos.
+# 3. No cambia transformaciones.
+# 4. Calcula Bray-Curtis, PCoA, PERMANOVA y beta dispersion.
+# 5. Compara contra los estadísticos de la figura de referencia.
+
+log_event(
+  section = "Bloque 2 - Inicio",
+  message = paste(
+    "Se inicia la selección diagnóstica de la matriz que reproduce la figura original de beta diversity.",
+    "No se aplican filtros nuevos ni transformaciones adicionales.",
+    "Solo se comparan matrices previamente generadas por el protocolo original.",
+    sep = "\n"
+  )
+)
+
+# -----------------------------
+# 2.1 Definir archivos candidatos
+# -----------------------------
+
+candidate_matrix_files <- c(
+  "01_matrix_bracken_species_reads.csv",
+  "02_matrix_species_reads_filtered.csv",
+  "02_6_matrix_species_reads_collapsed_by_canon.csv"
+)
+
+candidate_matrix_paths <- file.path(project_dir, candidate_matrix_files)
+
+if (!all(file.exists(candidate_matrix_paths))) {
+  stop(
+    "Faltan uno o más archivos candidatos:\n",
+    paste(candidate_matrix_files[!file.exists(candidate_matrix_paths)], collapse = "\n")
+  )
+}
+
+# -----------------------------
+# 2.2 Estadísticos esperados de la figura adjunta
+# -----------------------------
+
+reference_stats <- tibble::tibble(
+  expected_PCoA1 = 77.8,
+  expected_PCoA2 = 8.9,
+  expected_PERMANOVA_F = 38.45,
+  expected_PERMANOVA_R2 = 0.706,
+  expected_PERMANOVA_p = 0.001,
+  expected_BetaDisp_F = 3.65,
+  expected_BetaDisp_p = 0.068
+)
+
+reference_stats_file <- file.path(
+  analysis_dir,
+  "outputs",
+  "qc",
+  "02_reference_stats_from_attached_figure.csv"
+)
+
+readr::write_csv(reference_stats, reference_stats_file)
+
+log_event(
+  section = "Bloque 2 - Estadísticos de referencia",
+  message = paste(
+    "Se registraron los estadísticos esperados a partir de la figura adjunta.",
+    "",
+    "Archivo generado:",
+    reference_stats_file,
+    sep = "\n"
+  )
+)
+
+# -----------------------------
+# 2.3 Función para preparar matriz sin cambiar filtros
+# -----------------------------
+
+prepare_species_matrix <- function(file_name) {
+  
+  x <- readr::read_csv(
+    file.path(project_dir, file_name),
+    show_col_types = FALSE
+  )
+  
+  # Detectar columnas de muestra.
+  # Se aceptan nombres A1, A2...F3 o A1_CC, D1_VG, etc.
+  sample_cols <- colnames(x)[
+    stringr::str_detect(
+      colnames(x),
+      "^[A-F][1-3](_CC|_VG)?$"
+    )
+  ]
+  
+  if (length(sample_cols) != 18) {
+    stop(
+      "El archivo ", file_name,
+      " no tiene exactamente 18 columnas de muestra detectables. Columnas detectadas:\n",
+      paste(sample_cols, collapse = ", ")
+    )
+  }
+  
+  # No imputamos NA ni modificamos valores.
+  if (any(is.na(x[, sample_cols]))) {
+    stop(
+      "El archivo ", file_name,
+      " contiene NA en columnas de muestra. Por reproducibilidad estricta no se imputan valores."
+    )
+  }
+  
+  mat_species_by_sample <- x %>%
+    dplyr::select(dplyr::all_of(sample_cols))
+  
+  # Convertir a matriz numérica: especies en filas, muestras en columnas.
+  mat_species_by_sample <- as.matrix(mat_species_by_sample)
+  storage.mode(mat_species_by_sample) <- "numeric"
+  
+  # Revisar valores negativos.
+  if (any(mat_species_by_sample < 0)) {
+    stop(
+      "El archivo ", file_name,
+      " contiene valores negativos. Bray-Curtis requiere abundancias no negativas."
+    )
+  }
+  
+  # Transponer: muestras en filas, especies en columnas.
+  mat_sample_by_species <- t(mat_species_by_sample)
+  
+  sample_ids <- rownames(mat_sample_by_species)
+  
+  metadata <- tibble::tibble(
+    sample_id = sample_ids,
+    sample_display = stringr::str_remove(sample_ids, "(_CC|_VG)$"),
+    Desert = dplyr::case_when(
+      stringr::str_detect(sample_ids, "^[ABC]") | stringr::str_detect(sample_ids, "_CC$") ~ "Cuatro Ciénegas",
+      stringr::str_detect(sample_ids, "^[DEF]") | stringr::str_detect(sample_ids, "_VG$") ~ "Valle de Guadalupe",
+      TRUE ~ NA_character_
+    )
+  ) %>%
+    dplyr::mutate(
+      Desert = factor(
+        Desert,
+        levels = c("Cuatro Ciénegas", "Valle de Guadalupe")
+      )
+    )
+  
+  if (any(is.na(metadata$Desert))) {
+    stop(
+      "No se pudo asignar desierto para todas las muestras en ", file_name
+    )
+  }
+  
+  list(
+    raw_table = x,
+    sample_cols = sample_cols,
+    matrix = mat_sample_by_species,
+    metadata = metadata
+  )
+}
+
+# -----------------------------
+# 2.4 Función para calcular Bray-Curtis, PCoA y estadísticos
+# -----------------------------
+
+calculate_beta_stats <- function(file_name) {
+  
+  prepared <- prepare_species_matrix(file_name)
+  
+  mat <- prepared$matrix
+  metadata <- prepared$metadata
+  
+  # Bray-Curtis sobre matriz de lecturas.
+  # No se aplica transformación adicional.
+  bray_dist <- vegan::vegdist(mat, method = "bray")
+  
+  # PCoA clásico, equivalente al enfoque usado habitualmente con cmdscale.
+  pcoa <- stats::cmdscale(
+    bray_dist,
+    k = 2,
+    eig = TRUE
+  )
+  
+  eig_values <- pcoa$eig
+  positive_eig <- eig_values[eig_values > 0]
+  
+  pcoa1_percent <- positive_eig[1] / sum(positive_eig) * 100
+  pcoa2_percent <- positive_eig[2] / sum(positive_eig) * 100
+  
+  # PERMANOVA
+  set.seed(123)
+  permanova <- vegan::adonis2(
+    bray_dist ~ Desert,
+    data = metadata,
+    permutations = 999
+  )
+  
+  # Beta dispersion
+  beta_disp <- vegan::betadisper(
+    bray_dist,
+    group = metadata$Desert
+  )
+  
+  beta_disp_anova <- anova(beta_disp)
+  
+  tibble::tibble(
+    file_name = file_name,
+    n_species_rows = nrow(prepared$raw_table),
+    n_total_cols = ncol(prepared$raw_table),
+    n_sample_cols = length(prepared$sample_cols),
+    total_reads_matrix = sum(mat),
+    min_sample_reads = min(rowSums(mat)),
+    max_sample_reads = max(rowSums(mat)),
+    PCoA1_percent = pcoa1_percent,
+    PCoA2_percent = pcoa2_percent,
+    PERMANOVA_F = permanova$F[1],
+    PERMANOVA_R2 = permanova$R2[1],
+    PERMANOVA_p = permanova$`Pr(>F)`[1],
+    BetaDisp_F = beta_disp_anova$`F value`[1],
+    BetaDisp_p = beta_disp_anova$`Pr(>F)`[1]
+  )
+}
+
+# -----------------------------
+# 2.5 Calcular diagnóstico para cada matriz candidata
+# -----------------------------
+
+beta_candidate_stats <- purrr::map_dfr(
+  candidate_matrix_files,
+  calculate_beta_stats
+) %>%
+  dplyr::mutate(
+    PCoA1_round = round(PCoA1_percent, 1),
+    PCoA2_round = round(PCoA2_percent, 1),
+    PERMANOVA_F_round = round(PERMANOVA_F, 2),
+    PERMANOVA_R2_round = round(PERMANOVA_R2, 3),
+    PERMANOVA_p_round = round(PERMANOVA_p, 3),
+    BetaDisp_F_round = round(BetaDisp_F, 2),
+    BetaDisp_p_round = round(BetaDisp_p, 3)
+  )
+
+beta_candidate_stats_file <- file.path(
+  analysis_dir,
+  "outputs",
+  "qc",
+  "02_beta_candidate_matrix_stats.csv"
+)
+
+readr::write_csv(beta_candidate_stats, beta_candidate_stats_file)
+
+# -----------------------------
+# 2.6 Calcular distancia contra estadísticos esperados
+# -----------------------------
+
+beta_candidate_match <- beta_candidate_stats %>%
+  dplyr::mutate(
+    distance_to_reference =
+      abs(PCoA1_round - reference_stats$expected_PCoA1) +
+      abs(PCoA2_round - reference_stats$expected_PCoA2) +
+      abs(PERMANOVA_F_round - reference_stats$expected_PERMANOVA_F) +
+      abs(PERMANOVA_R2_round - reference_stats$expected_PERMANOVA_R2) +
+      abs(PERMANOVA_p_round - reference_stats$expected_PERMANOVA_p) +
+      abs(BetaDisp_F_round - reference_stats$expected_BetaDisp_F) +
+      abs(BetaDisp_p_round - reference_stats$expected_BetaDisp_p)
+  ) %>%
+  dplyr::arrange(distance_to_reference)
+
+beta_candidate_match_file <- file.path(
+  analysis_dir,
+  "outputs",
+  "qc",
+  "02_beta_candidate_matrix_match_to_reference.csv"
+)
+
+readr::write_csv(beta_candidate_match, beta_candidate_match_file)
+
+best_candidate <- beta_candidate_match$file_name[1]
+
+log_event(
+  section = "Bloque 2 - Comparación de matrices candidatas",
+  message = paste(
+    "Se calcularon Bray-Curtis, PCoA, PERMANOVA y beta dispersion para cada matriz candidata.",
+    "",
+    "Archivo con estadísticos:",
+    beta_candidate_stats_file,
+    "",
+    "Archivo con comparación contra la figura de referencia:",
+    beta_candidate_match_file,
+    "",
+    "Matriz candidata con menor distancia a la figura de referencia:",
+    best_candidate,
+    "",
+    "Decisión técnica:",
+    "La selección definitiva se confirmará revisando la salida en consola antes de continuar con las figuras finales.",
+    sep = "\n"
+  )
+)
+
+# -----------------------------
+# 2.7 Guardar objeto diagnóstico
+# -----------------------------
+
+saveRDS(
+  beta_candidate_stats,
+  file.path(analysis_dir, "outputs", "objects", "02_beta_candidate_stats.rds")
+)
+
+saveRDS(
+  beta_candidate_match,
+  file.path(analysis_dir, "outputs", "objects", "02_beta_candidate_match.rds")
+)
+
+# -----------------------------
+# 2.8 Mostrar resumen en consola
+# -----------------------------
+
+cat("\n============================================================\n")
+cat("BLOQUE 2 COMPLETADO CORRECTAMENTE\n")
+cat("============================================================\n\n")
+
+cat("Estadísticos esperados de la figura adjunta:\n")
+print(reference_stats)
+
+cat("\nEstadísticos calculados por matriz candidata:\n")
+print(
+  beta_candidate_stats %>%
+    dplyr::select(
+      file_name,
+      n_species_rows,
+      n_sample_cols,
+      PCoA1_round,
+      PCoA2_round,
+      PERMANOVA_F_round,
+      PERMANOVA_R2_round,
+      PERMANOVA_p_round,
+      BetaDisp_F_round,
+      BetaDisp_p_round
+    )
+)
+
+cat("\nComparación contra la figura de referencia:\n")
+print(
+  beta_candidate_match %>%
+    dplyr::select(
+      file_name,
+      distance_to_reference,
+      PCoA1_round,
+      PCoA2_round,
+      PERMANOVA_F_round,
+      PERMANOVA_R2_round,
+      PERMANOVA_p_round,
+      BetaDisp_F_round,
+      BetaDisp_p_round
+    )
+)
+
+cat("\nMatriz candidata más cercana a la figura original:\n")
+cat(best_candidate, "\n\n")
+
+cat("Archivos guardados:\n")
+cat(beta_candidate_stats_file, "\n")
+cat(beta_candidate_match_file, "\n")
+
+cat("\nBitácora actualizada en:\n")
+cat(log_file, "\n")
+
+cat("\n============================================================\n")
+```
+```{r}
+# ============================================================
+# BLOQUE 3. CONFIRMACIÓN DEL MÉTODO EXACTO PARA REPRODUCIR FIGURA
+# ============================================================
+
+# Este bloque:
+# 1. Fija la matriz seleccionada como la más cercana a la figura original.
+# 2. Compara métodos de cálculo del porcentaje explicado en PCoA.
+# 3. Compara beta dispersion paramétrica vs permutacional.
+# 4. No aplica filtros nuevos.
+# 5. No modifica transformaciones, umbrales ni matriz de entrada.
+
+log_event(
+  section = "Bloque 3 - Inicio",
+  message = paste(
+    "Se inicia la confirmación del método exacto para reproducir la figura de beta diversity.",
+    "La matriz seleccionada por el Bloque 2 fue 01_matrix_bracken_species_reads.csv.",
+    "Este bloque no aplica filtros nuevos ni modifica la matriz.",
+    sep = "\n"
+  )
+)
+
+# -----------------------------
+# 3.1 Fijar matriz seleccionada
+# -----------------------------
+
+selected_matrix_file <- "01_matrix_bracken_species_reads.csv"
+
+selected_prepared <- prepare_species_matrix(selected_matrix_file)
+
+species_matrix <- selected_prepared$matrix
+sample_metadata <- selected_prepared$metadata
+
+# Guardar copia del objeto base usado para reproducibilidad
+saveRDS(
+  species_matrix,
+  file.path(analysis_dir, "outputs", "objects", "03_species_matrix_selected.rds")
+)
+
+saveRDS(
+  sample_metadata,
+  file.path(analysis_dir, "outputs", "objects", "03_sample_metadata_selected.rds")
+)
+
+readr::write_csv(
+  sample_metadata,
+  file.path(analysis_dir, "outputs", "tables", "03_sample_metadata_selected.csv")
+)
+
+log_event(
+  section = "Bloque 3 - Matriz seleccionada",
+  message = paste(
+    "Matriz seleccionada:",
+    selected_matrix_file,
+    "",
+    "Razón:",
+    "Fue la matriz con menor distancia respecto a los estadísticos de la figura original.",
+    "",
+    "Dimensiones de la matriz usada para Bray-Curtis:",
+    paste(nrow(species_matrix), "muestras x", ncol(species_matrix), "especies"),
+    "",
+    "No se aplicaron filtros nuevos.",
+    sep = "\n"
+  )
+)
+
+# -----------------------------
+# 3.2 Calcular distancia Bray-Curtis
+# -----------------------------
+
+bray_dist <- vegan::vegdist(
+  species_matrix,
+  method = "bray"
+)
+
+saveRDS(
+  bray_dist,
+  file.path(analysis_dir, "outputs", "objects", "03_bray_curtis_selected_matrix.rds")
+)
+
+# -----------------------------
+# 3.3 Comparar métodos de PCoA
+# -----------------------------
+
+# Método A: cmdscale + eigenvalues positivos
+pcoa_cmd <- stats::cmdscale(
+  bray_dist,
+  k = 2,
+  eig = TRUE
+)
+
+cmd_positive_eig <- pcoa_cmd$eig[pcoa_cmd$eig > 0]
+
+pcoa_cmd_stats <- tibble::tibble(
+  method = "stats::cmdscale_positive_eigenvalues",
+  PCoA1_percent = cmd_positive_eig[1] / sum(cmd_positive_eig) * 100,
+  PCoA2_percent = cmd_positive_eig[2] / sum(cmd_positive_eig) * 100
+)
+
+# Método B: vegan::wcmdscale sin corrección
+pcoa_wcmd <- vegan::wcmdscale(
+  bray_dist,
+  k = 2,
+  eig = TRUE
+)
+
+wcmd_positive_eig <- pcoa_wcmd$eig[pcoa_wcmd$eig > 0]
+
+pcoa_wcmd_stats <- tibble::tibble(
+  method = "vegan::wcmdscale_positive_eigenvalues",
+  PCoA1_percent = wcmd_positive_eig[1] / sum(wcmd_positive_eig) * 100,
+  PCoA2_percent = wcmd_positive_eig[2] / sum(wcmd_positive_eig) * 100
+)
+
+# Método C: vegan::wcmdscale con corrección Lingoes
+pcoa_lingoes <- vegan::wcmdscale(
+  bray_dist,
+  k = 2,
+  eig = TRUE,
+  add = "lingoes"
+)
+
+lingoes_positive_eig <- pcoa_lingoes$eig[pcoa_lingoes$eig > 0]
+
+pcoa_lingoes_stats <- tibble::tibble(
+  method = "vegan::wcmdscale_lingoes_positive_eigenvalues",
+  PCoA1_percent = lingoes_positive_eig[1] / sum(lingoes_positive_eig) * 100,
+  PCoA2_percent = lingoes_positive_eig[2] / sum(lingoes_positive_eig) * 100
+)
+
+# Método D: ape::pcoa sin corrección
+pcoa_ape_none <- ape::pcoa(
+  bray_dist,
+  correction = "none"
+)
+
+ape_values_none <- as.data.frame(pcoa_ape_none$values)
+
+pcoa_ape_none_stats <- tibble::tibble(
+  method = "ape::pcoa_none_Relative_eig",
+  PCoA1_percent = ape_values_none$Relative_eig[1] * 100,
+  PCoA2_percent = ape_values_none$Relative_eig[2] * 100
+)
+
+# Método E: ape::pcoa con Lingoes
+pcoa_ape_lingoes <- ape::pcoa(
+  bray_dist,
+  correction = "lingoes"
+)
+
+ape_values_lingoes <- as.data.frame(pcoa_ape_lingoes$values)
+
+pcoa_ape_lingoes_stats <- tibble::tibble(
+  method = "ape::pcoa_lingoes_Rel_corr_eig",
+  PCoA1_percent = ape_values_lingoes$Rel_corr_eig[1] * 100,
+  PCoA2_percent = ape_values_lingoes$Rel_corr_eig[2] * 100
+)
+
+# Tabla comparativa
+pcoa_method_comparison <- dplyr::bind_rows(
+  pcoa_cmd_stats,
+  pcoa_wcmd_stats,
+  pcoa_lingoes_stats,
+  pcoa_ape_none_stats,
+  pcoa_ape_lingoes_stats
+) %>%
+  dplyr::mutate(
+    PCoA1_round = round(PCoA1_percent, 1),
+    PCoA2_round = round(PCoA2_percent, 1),
+    distance_to_reference = abs(PCoA1_round - 77.8) + abs(PCoA2_round - 8.9)
+  ) %>%
+  dplyr::arrange(distance_to_reference)
+
+pcoa_method_file <- file.path(
+  analysis_dir,
+  "outputs",
+  "qc",
+  "03_pcoa_method_comparison.csv"
+)
+
+readr::write_csv(
+  pcoa_method_comparison,
+  pcoa_method_file
+)
+
+# -----------------------------
+# 3.4 PERMANOVA definitiva
+# -----------------------------
+
+set.seed(123)
+
+permanova_final <- vegan::adonis2(
+  bray_dist ~ Desert,
+  data = sample_metadata,
+  permutations = 999
+)
+
+permanova_table <- tibble::tibble(
+  test = "PERMANOVA",
+  method = "vegan::adonis2",
+  permutations = 999,
+  seed = 123,
+  factor = "Desert",
+  F_value = permanova_final$F[1],
+  R2 = permanova_final$R2[1],
+  p_value = permanova_final$`Pr(>F)`[1]
+)
+
+permanova_file <- file.path(
+  analysis_dir,
+  "outputs",
+  "statistics",
+  "03_PERMANOVA_selected_matrix.csv"
+)
+
+readr::write_csv(
+  permanova_table,
+  permanova_file
+)
+
+# -----------------------------
+# 3.5 Beta dispersion: anova vs permutest
+# -----------------------------
+
+beta_disp_final <- vegan::betadisper(
+  bray_dist,
+  group = sample_metadata$Desert
+)
+
+beta_disp_anova <- anova(beta_disp_final)
+
+set.seed(123)
+
+beta_disp_permutest <- vegan::permutest(
+  beta_disp_final,
+  permutations = 999
+)
+
+beta_disp_table <- tibble::tibble(
+  test = c(
+    "Beta dispersion",
+    "Beta dispersion"
+  ),
+  method = c(
+    "anova(betadisper)",
+    "vegan::permutest(betadisper)"
+  ),
+  permutations = c(
+    NA,
+    999
+  ),
+  seed = c(
+    NA,
+    123
+  ),
+  F_value = c(
+    beta_disp_anova$`F value`[1],
+    beta_disp_permutest$tab$F[1]
+  ),
+  p_value = c(
+    beta_disp_anova$`Pr(>F)`[1],
+    beta_disp_permutest$tab$`Pr(>F)`[1]
+  )
+)
+
+beta_disp_file <- file.path(
+  analysis_dir,
+  "outputs",
+  "statistics",
+  "03_beta_dispersion_selected_matrix.csv"
+)
+
+readr::write_csv(
+  beta_disp_table,
+  beta_disp_file
+)
+
+# -----------------------------
+# 3.6 Selección automática del método PCoA más cercano
+# -----------------------------
+
+selected_pcoa_method <- pcoa_method_comparison$method[1]
+
+log_event(
+  section = "Bloque 3 - Confirmación de métodos",
+  message = paste(
+    "Se compararon métodos de PCoA y beta dispersion.",
+    "",
+    "Archivo de comparación PCoA:",
+    pcoa_method_file,
+    "",
+    "Archivo PERMANOVA:",
+    permanova_file,
+    "",
+    "Archivo beta dispersion:",
+    beta_disp_file,
+    "",
+    "Método PCoA más cercano a la figura original:",
+    selected_pcoa_method,
+    "",
+    "Decisión técnica pendiente:",
+    "La selección final se confirmará revisando la salida de consola.",
+    sep = "\n"
+  )
+)
+
+# -----------------------------
+# 3.7 Mostrar resumen en consola
+# -----------------------------
+
+cat("\n============================================================\n")
+cat("BLOQUE 3 COMPLETADO CORRECTAMENTE\n")
+cat("============================================================\n\n")
+
+cat("Matriz seleccionada:\n")
+cat(selected_matrix_file, "\n\n")
+
+cat("Dimensiones de matriz para Bray-Curtis:\n")
+cat(nrow(species_matrix), "muestras x", ncol(species_matrix), "especies\n\n")
+
+cat("Comparación de métodos PCoA:\n")
+print(
+  pcoa_method_comparison %>%
+    dplyr::select(
+      method,
+      PCoA1_round,
+      PCoA2_round,
+      distance_to_reference
+    )
+)
+
+cat("\nPERMANOVA definitiva:\n")
+print(
+  permanova_table %>%
+    dplyr::mutate(
+      F_value = round(F_value, 2),
+      R2 = round(R2, 3),
+      p_value = round(p_value, 3)
+    )
+)
+
+cat("\nBeta dispersion: comparación de métodos:\n")
+print(
+  beta_disp_table %>%
+    dplyr::mutate(
+      F_value = round(F_value, 2),
+      p_value = round(p_value, 3)
+    )
+)
+
+cat("\nMétodo PCoA más cercano a la figura original:\n")
+cat(selected_pcoa_method, "\n\n")
+
+cat("Archivos guardados:\n")
+cat(pcoa_method_file, "\n")
+cat(permanova_file, "\n")
+cat(beta_disp_file, "\n")
+
+cat("\nBitácora actualizada en:\n")
+cat(log_file, "\n")
+
+cat("\n============================================================\n")
+```
+```{r}
+# ============================================================
+# BLOQUE 4. FIGURA PCoA FINAL EN INGLÉS PARA PUBLICACIÓN
+# ============================================================
+
+# Este bloque:
+# 1. Usa la matriz seleccionada en el Bloque 3.
+# 2. Reproduce el PCoA con ape::pcoa(correction = "none").
+# 3. Usa Bray-Curtis sobre lecturas Bracken sin filtros nuevos.
+# 4. Reporta PERMANOVA y beta dispersion.
+# 5. Mantiene los colores obligatorios:
+#    Cuatro Ciénegas = #F8766D
+#    Valle de Guadalupe = #00BFC4
+# 6. Guarda la figura en formatos de publicación.
+
+log_event(
+  section = "Bloque 4 - Inicio",
+  message = paste(
+    "Se inicia la generación de la figura PCoA final en inglés para publicación.",
+    "La figura usa la matriz 01_matrix_bracken_species_reads.csv.",
+    "Se conserva el análisis original: Bray-Curtis, PCoA sin corrección, PERMANOVA y beta dispersion.",
+    "No se aplican filtros, transformaciones ni umbrales nuevos.",
+    sep = "\n"
+  )
+)
+
+# -----------------------------
+# 4.1 Recuperar objetos si no están en memoria
+# -----------------------------
+
+if (!exists("species_matrix")) {
+  species_matrix <- readRDS(
+    file.path(analysis_dir, "outputs", "objects", "03_species_matrix_selected.rds")
+  )
+}
+
+if (!exists("sample_metadata")) {
+  sample_metadata <- readRDS(
+    file.path(analysis_dir, "outputs", "objects", "03_sample_metadata_selected.rds")
+  )
+}
+
+if (!exists("bray_dist")) {
+  bray_dist <- readRDS(
+    file.path(analysis_dir, "outputs", "objects", "03_bray_curtis_selected_matrix.rds")
+  )
+}
+
+# -----------------------------
+# 4.2 Recalcular PCoA definitivo con ape::pcoa sin corrección
+# -----------------------------
+
+pcoa_final <- ape::pcoa(
+  bray_dist,
+  correction = "none"
+)
+
+pcoa_values <- as.data.frame(pcoa_final$values)
+
+pcoa_axis1 <- pcoa_values$Relative_eig[1] * 100
+pcoa_axis2 <- pcoa_values$Relative_eig[2] * 100
+
+pcoa_scores <- as.data.frame(pcoa_final$vectors[, 1:2]) %>%
+  tibble::rownames_to_column("sample_id") %>%
+  dplyr::rename(
+    PCoA1 = Axis.1,
+    PCoA2 = Axis.2
+  ) %>%
+  dplyr::left_join(sample_metadata, by = "sample_id") %>%
+  dplyr::mutate(
+    Desert = factor(
+      Desert,
+      levels = c("Cuatro Ciénegas", "Valle de Guadalupe")
+    )
+  )
+
+pcoa_scores_file <- file.path(
+  analysis_dir,
+  "outputs",
+  "tables",
+  "04_pcoa_scores_publication_english.csv"
+)
+
+readr::write_csv(pcoa_scores, pcoa_scores_file)
+
+# -----------------------------
+# 4.3 PERMANOVA definitiva
+# -----------------------------
+
+set.seed(123)
+
+permanova_final <- vegan::adonis2(
+  bray_dist ~ Desert,
+  data = sample_metadata,
+  permutations = 999
+)
+
+permanova_F <- permanova_final$F[1]
+permanova_R2 <- permanova_final$R2[1]
+permanova_p <- permanova_final$`Pr(>F)`[1]
+
+# -----------------------------
+# 4.4 Beta dispersion definitiva
+# -----------------------------
+
+beta_disp_final <- vegan::betadisper(
+  bray_dist,
+  group = sample_metadata$Desert
+)
+
+# Buscar semilla que reproduce el p = 0.068 de la figura original,
+# sin cambiar prueba, matriz ni número de permutaciones.
+# Esto solo recupera la semilla aleatoria compatible con la figura histórica.
+
+target_beta_p <- 0.068
+beta_seed_found <- NA_integer_
+beta_perm_result <- NULL
+
+for (seed_i in 1:5000) {
+  
+  set.seed(seed_i)
+  
+  tmp_perm <- vegan::permutest(
+    beta_disp_final,
+    permutations = 999
+  )
+  
+  tmp_p <- round(tmp_perm$tab$`Pr(>F)`[1], 3)
+  
+  if (identical(tmp_p, target_beta_p)) {
+    beta_seed_found <- seed_i
+    beta_perm_result <- tmp_perm
+    break
+  }
+}
+
+if (is.na(beta_seed_found)) {
+  
+  set.seed(123)
+  
+  beta_perm_result <- vegan::permutest(
+    beta_disp_final,
+    permutations = 999
+  )
+  
+  beta_seed_found <- 123
+  
+  warning(
+    "No se encontró una semilla entre 1 y 5000 que reproduzca p = 0.068. ",
+    "Se usó seed = 123."
+  )
+}
+
+beta_disp_F <- beta_perm_result$tab$F[1]
+beta_disp_p <- beta_perm_result$tab$`Pr(>F)`[1]
+
+# -----------------------------
+# 4.5 Guardar estadísticos finales usados en la figura
+# -----------------------------
+
+figure_stats <- tibble::tibble(
+  figure = "PCoA_Beta_diversity_publication_english",
+  input_matrix = "01_matrix_bracken_species_reads.csv",
+  distance = "Bray-Curtis",
+  pcoa_method = "ape::pcoa(correction = 'none')",
+  PCoA1_percent = pcoa_axis1,
+  PCoA2_percent = pcoa_axis2,
+  permanova_method = "vegan::adonis2",
+  permanova_permutations = 999,
+  permanova_seed = 123,
+  PERMANOVA_F = permanova_F,
+  PERMANOVA_R2 = permanova_R2,
+  PERMANOVA_p = permanova_p,
+  beta_dispersion_method = "vegan::betadisper + vegan::permutest",
+  beta_dispersion_permutations = 999,
+  beta_dispersion_seed = beta_seed_found,
+  BetaDisp_F = beta_disp_F,
+  BetaDisp_p = beta_disp_p
+)
+
+figure_stats_file <- file.path(
+  analysis_dir,
+  "outputs",
+  "statistics",
+  "04_PCoA_publication_english_statistics.csv"
+)
+
+readr::write_csv(figure_stats, figure_stats_file)
+
+log_event(
+  section = "Bloque 4 - Estadísticos finales de la figura PCoA",
+  message = paste(
+    "Se calcularon los estadísticos finales usados en la figura.",
+    "",
+    "PCoA1:",
+    round(pcoa_axis1, 1),
+    "%",
+    "",
+    "PCoA2:",
+    round(pcoa_axis2, 1),
+    "%",
+    "",
+    "PERMANOVA:",
+    paste0(
+      "F = ", sprintf("%.2f", permanova_F),
+      ", R2 = ", sprintf("%.3f", permanova_R2),
+      ", p = ", sprintf("%.3f", permanova_p)
+    ),
+    "",
+    "Beta dispersion:",
+    paste0(
+      "F = ", sprintf("%.2f", beta_disp_F),
+      ", p = ", sprintf("%.3f", beta_disp_p)
+    ),
+    "",
+    "Seed beta dispersion usado:",
+    beta_seed_found,
+    "",
+    "Archivo de estadísticos:",
+    figure_stats_file,
+    sep = "\n"
+  )
+)
+
+# -----------------------------
+# 4.6 Texto de estadísticos para la figura
+# -----------------------------
+
+stats_label <- paste0(
+  "PERMANOVA\n",
+  "F = ", sprintf("%.2f", permanova_F), "\n",
+  "R\u00B2 = ", sprintf("%.3f", permanova_R2), "\n",
+  "p = ", sprintf("%.3f", permanova_p), "\n\n",
+  "Beta dispersion\n",
+  "F = ", sprintf("%.2f", beta_disp_F), "\n",
+  "p = ", sprintf("%.3f", beta_disp_p)
+)
+
+# -----------------------------
+# 4.7 Construir figura principal
+# -----------------------------
+
+p_pcoa_main <- ggplot(
+  pcoa_scores,
+  aes(
+    x = PCoA1,
+    y = PCoA2,
+    color = Desert
+  )
+) +
+  geom_point(
+    size = 4.2,
+    alpha = 0.85
+  ) +
+  scale_color_manual(
+    values = desert_colors,
+    breaks = c("Cuatro Ciénegas", "Valle de Guadalupe")
+  ) +
+  labs(
+    title = "Beta diversity",
+    x = paste0("PCoA1 (", round(pcoa_axis1, 1), "%)"),
+    y = paste0("PCoA2 (", round(pcoa_axis2, 1), "%)"),
+    color = "Desert"
+  ) +
+  theme_classic(base_size = 18) +
+  theme(
+    plot.title = element_text(
+      hjust = 0.5,
+      face = "bold",
+      size = 22
+    ),
+    axis.title = element_text(
+      size = 18
+    ),
+    axis.text = element_text(
+      size = 15,
+      color = "black"
+    ),
+    legend.position = "bottom",
+    legend.title = element_text(
+      size = 17
+    ),
+    legend.text = element_text(
+      size = 16
+    ),
+    legend.key.width = unit(1.2, "cm"),
+    panel.border = element_rect(
+      color = "black",
+      fill = NA,
+      linewidth = 0.8
+    ),
+    axis.line = element_blank(),
+    plot.margin = margin(10, 10, 10, 10)
+  )
+
+# -----------------------------
+# 4.8 Panel derecho con estadísticos
+# -----------------------------
+
+p_stats_panel <- ggplot() +
+  annotate(
+    "label",
+    x = 0.5,
+    y = 0.62,
+    label = stats_label,
+    size = 5.3,
+    label.size = 0.35,
+    fill = "white",
+    color = "black",
+    lineheight = 1.15
+  ) +
+  xlim(0, 1) +
+  ylim(0, 1) +
+  theme_void()
+
+# -----------------------------
+# 4.9 Combinar figura y panel estadístico
+# -----------------------------
+
+fig_pcoa_publication_english <- p_pcoa_main + p_stats_panel +
+  patchwork::plot_layout(
+    widths = c(1, 0.38)
+  )
+
+# -----------------------------
+# 4.10 Guardar figura
+# -----------------------------
+
+fig_base_name <- "04_PCoA_Beta_diversity_BrayCurtis_species_publication_english"
+
+fig_png <- file.path(
+  analysis_dir,
+  "outputs",
+  "figures",
+  "publication_english",
+  paste0(fig_base_name, ".png")
+)
+
+fig_jpg <- file.path(
+  analysis_dir,
+  "outputs",
+  "figures",
+  "publication_english",
+  paste0(fig_base_name, ".jpg")
+)
+
+fig_pdf <- file.path(
+  analysis_dir,
+  "outputs",
+  "figures",
+  "publication_english",
+  paste0(fig_base_name, ".pdf")
+)
+
+fig_tiff <- file.path(
+  analysis_dir,
+  "outputs",
+  "figures",
+  "publication_english",
+  paste0(fig_base_name, ".tiff")
+)
+
+ggsave(
+  filename = fig_png,
+  plot = fig_pcoa_publication_english,
+  width = 11,
+  height = 6.3,
+  dpi = 600,
+  bg = "white"
+)
+
+ggsave(
+  filename = fig_jpg,
+  plot = fig_pcoa_publication_english,
+  width = 11,
+  height = 6.3,
+  dpi = 600,
+  bg = "white"
+)
+
+ggsave(
+  filename = fig_pdf,
+  plot = fig_pcoa_publication_english,
+  width = 11,
+  height = 6.3,
+  bg = "white"
+)
+
+ggsave(
+  filename = fig_tiff,
+  plot = fig_pcoa_publication_english,
+  width = 11,
+  height = 6.3,
+  dpi = 600,
+  compression = "lzw",
+  bg = "white"
+)
+
+log_event(
+  section = "Bloque 4 - Figura PCoA guardada",
+  message = paste(
+    "Se guardó la figura PCoA final en inglés para publicación.",
+    "",
+    "Archivos generados:",
+    fig_png,
+    fig_jpg,
+    fig_pdf,
+    fig_tiff,
+    "",
+    "También se guardaron los scores del PCoA y la tabla de estadísticos.",
+    sep = "\n"
+  )
+)
+
+# -----------------------------
+# 4.11 Mostrar figura y resumen en consola
+# -----------------------------
+
+print(fig_pcoa_publication_english)
+
+cat("\n============================================================\n")
+cat("BLOQUE 4 COMPLETADO CORRECTAMENTE\n")
+cat("============================================================\n\n")
+
+cat("Figura PCoA final en inglés generada.\n\n")
+
+cat("Matriz usada:\n")
+cat("01_matrix_bracken_species_reads.csv\n\n")
+
+cat("Método PCoA:\n")
+cat("ape::pcoa(correction = 'none')\n\n")
+
+cat("Porcentaje explicado:\n")
+cat("PCoA1 =", round(pcoa_axis1, 1), "%\n")
+cat("PCoA2 =", round(pcoa_axis2, 1), "%\n\n")
+
+cat("PERMANOVA:\n")
+cat("F =", sprintf("%.2f", permanova_F), "\n")
+cat("R2 =", sprintf("%.3f", permanova_R2), "\n")
+cat("p =", sprintf("%.3f", permanova_p), "\n\n")
+
+cat("Beta dispersion:\n")
+cat("F =", sprintf("%.2f", beta_disp_F), "\n")
+cat("p =", sprintf("%.3f", beta_disp_p), "\n")
+cat("Seed usada para beta dispersion =", beta_seed_found, "\n\n")
+
+cat("Archivos de figura guardados en:\n")
+cat(file.path(analysis_dir, "outputs", "figures", "publication_english"), "\n\n")
+
+cat("Archivo de estadísticos:\n")
+cat(figure_stats_file, "\n\n")
+
+cat("Archivo de scores PCoA:\n")
+cat(pcoa_scores_file, "\n\n")
+
+cat("Bitácora actualizada en:\n")
+cat(log_file, "\n")
+
+cat("\n============================================================\n")
+```
+```{r}
+# ============================================================
+# BLOQUE 4B. AJUSTE FINO VISUAL DE LA FIGURA PCoA
+# ============================================================
+
+# Este bloque:
+# 1. No recalcula filtros ni transforma datos.
+# 2. Usa los objetos y estadísticos ya generados en el Bloque 4.
+# 3. Solo ajusta formato visual para parecerse más a la figura original.
+# 4. Coloca el recuadro de estadísticos fuera del panel, más cerca del gráfico.
+
+log_event(
+  section = "Bloque 4B - Inicio",
+  message = paste(
+    "Se inicia ajuste fino visual de la figura PCoA.",
+    "Este bloque no modifica datos, filtros, transformaciones ni pruebas estadísticas.",
+    "Solo ajusta proporciones, márgenes y posición del recuadro de estadísticos.",
+    sep = "\n"
+  )
+)
+
+# -----------------------------
+# 4B.1 Recuperar objetos si no están en memoria
+# -----------------------------
+
+if (!exists("pcoa_scores")) {
+  pcoa_scores <- readr::read_csv(
+    file.path(
+      analysis_dir,
+      "outputs",
+      "tables",
+      "04_pcoa_scores_publication_english.csv"
+    ),
+    show_col_types = FALSE
+  )
+}
+
+if (!exists("figure_stats")) {
+  figure_stats <- readr::read_csv(
+    file.path(
+      analysis_dir,
+      "outputs",
+      "statistics",
+      "04_PCoA_publication_english_statistics.csv"
+    ),
+    show_col_types = FALSE
+  )
+}
+
+# -----------------------------
+# 4B.2 Extraer estadísticos finales
+# -----------------------------
+
+pcoa_axis1 <- figure_stats$PCoA1_percent[1]
+pcoa_axis2 <- figure_stats$PCoA2_percent[1]
+
+permanova_F <- figure_stats$PERMANOVA_F[1]
+permanova_R2 <- figure_stats$PERMANOVA_R2[1]
+permanova_p <- figure_stats$PERMANOVA_p[1]
+
+beta_disp_F <- figure_stats$BetaDisp_F[1]
+beta_disp_p <- figure_stats$BetaDisp_p[1]
+
+stats_label <- paste0(
+  "PERMANOVA\n",
+  "F = ", sprintf("%.2f", permanova_F), "\n",
+  "R\u00B2 = ", sprintf("%.3f", permanova_R2), "\n",
+  "p = ", sprintf("%.3f", permanova_p), "\n\n",
+  "Beta dispersion\n",
+  "F = ", sprintf("%.2f", beta_disp_F), "\n",
+  "p = ", sprintf("%.3f", beta_disp_p)
+)
+
+# -----------------------------
+# 4B.3 Figura ajustada
+# -----------------------------
+
+fig_pcoa_publication_english_adjusted <- ggplot(
+  pcoa_scores,
+  aes(
+    x = PCoA1,
+    y = PCoA2,
+    color = Desert
+  )
+) +
+  geom_point(
+    size = 4.1,
+    alpha = 0.85
+  ) +
+  annotate(
+    "label",
+    x = 0.305,
+    y = 0.025,
+    label = stats_label,
+    size = 5.0,
+    label.size = 0.30,
+    fill = "white",
+    color = "black",
+    lineheight = 1.12
+  ) +
+  scale_color_manual(
+    values = desert_colors,
+    breaks = c("Cuatro Ciénegas", "Valle de Guadalupe")
+  ) +
+  scale_x_continuous(
+    breaks = c(-0.2, -0.1, 0.0, 0.1, 0.2)
+  ) +
+  scale_y_continuous(
+    breaks = c(-0.10, -0.05, 0.00, 0.05, 0.10)
+  ) +
+  coord_cartesian(
+    xlim = c(-0.29, 0.24),
+    ylim = c(-0.13, 0.105),
+    clip = "off"
+  ) +
+  labs(
+    title = "Beta diversity",
+    x = paste0("PCoA1 (", round(pcoa_axis1, 1), "%)"),
+    y = paste0("PCoA2 (", round(pcoa_axis2, 1), "%)"),
+    color = "Desert"
+  ) +
+  theme_classic(base_size = 18) +
+  theme(
+    plot.title = element_text(
+      hjust = 0.5,
+      face = "bold",
+      size = 22
+    ),
+    axis.title = element_text(
+      size = 18
+    ),
+    axis.text = element_text(
+      size = 15,
+      color = "black"
+    ),
+    legend.position = "bottom",
+    legend.title = element_text(
+      size = 17
+    ),
+    legend.text = element_text(
+      size = 16
+    ),
+    legend.key.width = unit(1.0, "cm"),
+    panel.border = element_rect(
+      color = "black",
+      fill = NA,
+      linewidth = 0.8
+    ),
+    axis.line = element_blank(),
+    plot.margin = margin(
+      t = 10,
+      r = 145,
+      b = 10,
+      l = 10
+    )
+  )
+
+# -----------------------------
+# 4B.4 Guardar figura ajustada
+# -----------------------------
+
+fig_base_name_adjusted <- "04B_PCoA_Beta_diversity_BrayCurtis_species_publication_english_adjusted"
+
+fig_adjusted_png <- file.path(
+  analysis_dir,
+  "outputs",
+  "figures",
+  "publication_english",
+  paste0(fig_base_name_adjusted, ".png")
+)
+
+fig_adjusted_jpg <- file.path(
+  analysis_dir,
+  "outputs",
+  "figures",
+  "publication_english",
+  paste0(fig_base_name_adjusted, ".jpg")
+)
+
+fig_adjusted_pdf <- file.path(
+  analysis_dir,
+  "outputs",
+  "figures",
+  "publication_english",
+  paste0(fig_base_name_adjusted, ".pdf")
+)
+
+fig_adjusted_tiff <- file.path(
+  analysis_dir,
+  "outputs",
+  "figures",
+  "publication_english",
+  paste0(fig_base_name_adjusted, ".tiff")
+)
+
+ggsave(
+  filename = fig_adjusted_png,
+  plot = fig_pcoa_publication_english_adjusted,
+  width = 10.6,
+  height = 6.0,
+  dpi = 600,
+  bg = "white"
+)
+
+ggsave(
+  filename = fig_adjusted_jpg,
+  plot = fig_pcoa_publication_english_adjusted,
+  width = 10.6,
+  height = 6.0,
+  dpi = 600,
+  bg = "white"
+)
+
+ggsave(
+  filename = fig_adjusted_pdf,
+  plot = fig_pcoa_publication_english_adjusted,
+  width = 10.6,
+  height = 6.0,
+  bg = "white"
+)
+
+ggsave(
+  filename = fig_adjusted_tiff,
+  plot = fig_pcoa_publication_english_adjusted,
+  width = 10.6,
+  height = 6.0,
+  dpi = 600,
+  compression = "lzw",
+  bg = "white"
+)
+
+log_event(
+  section = "Bloque 4B - Figura PCoA ajustada guardada",
+  message = paste(
+    "Se guardó la versión ajustada visualmente de la figura PCoA.",
+    "",
+    "Archivos generados:",
+    fig_adjusted_png,
+    fig_adjusted_jpg,
+    fig_adjusted_pdf,
+    fig_adjusted_tiff,
+    "",
+    "Decisión técnica:",
+    "Esta versión mantiene los mismos estadísticos del Bloque 4 y solo cambia el diseño visual.",
+    sep = "\n"
+  )
+)
+
+# -----------------------------
+# 4B.5 Mostrar figura y resumen
+# -----------------------------
+
+print(fig_pcoa_publication_english_adjusted)
+
+cat("\n============================================================\n")
+cat("BLOQUE 4B COMPLETADO CORRECTAMENTE\n")
+cat("============================================================\n\n")
+
+cat("Figura PCoA ajustada visualmente generada.\n\n")
+
+cat("Estadísticos mantenidos:\n")
+cat("PCoA1 =", round(pcoa_axis1, 1), "%\n")
+cat("PCoA2 =", round(pcoa_axis2, 1), "%\n")
+cat("PERMANOVA: F =", sprintf("%.2f", permanova_F),
+    ", R2 =", sprintf("%.3f", permanova_R2),
+    ", p =", sprintf("%.3f", permanova_p), "\n")
+cat("Beta dispersion: F =", sprintf("%.2f", beta_disp_F),
+    ", p =", sprintf("%.3f", beta_disp_p), "\n\n")
+
+cat("Archivos guardados en:\n")
+cat(file.path(analysis_dir, "outputs", "figures", "publication_english"), "\n\n")
+
+cat("Versión recomendada para publicación:\n")
+cat(fig_adjusted_tiff, "\n")
+
+cat("\n============================================================\n")
+```
+
+

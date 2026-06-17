@@ -1,0 +1,22 @@
+cff-version: 1.2.0
+title: "BSC-metagenomics"
+message: "If you use this code, please cite the associated manuscript and the archived Zenodo DOI."
+type: software
+authors:
+  - family-names: Sarmina
+    given-names: Gloria A.
+repository-code: "https://github.com/XXXXXXX/BSC-metagenomics"
+abstract: "Bioinformatic and statistical analysis code for shotgun metagenomes of biological soil crusts from Cuatro Ciénegas and Valle de Guadalupe deserts, Mexico."
+keywords:
+  - biological soil crusts
+  - shotgun metagenomics
+  - desert microbiomes
+  - Kraken2
+  - Bracken
+  - HUMAnN
+  - KEGG Orthology
+  - MetaCyc
+  - functional redundancy
+license: MIT
+version: "1.0.0"
+date-released: "2026-06-17"

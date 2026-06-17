@@ -1,0 +1,3118 @@
+---
+title: "Physicochemical Drivers of Microbial Community Structure"
+author: "Gloria Sarmina"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+    theme: readable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.align = "center",
+  fig.width = 8,
+  fig.height = 6,
+  dpi = 300
+)
+```
+
+## Objective
+
+Evaluate the association between microbial community composition  
+(GTDB-Bracken species-level profiles) and soil physicochemical variables.
+
+## Reproducibility policy
+
+This protocol was designed under a strict reproducibility framework.
+
+The analysis follows these rules:
+
+- No packages are installed automatically inside this Markdown.
+- Required packages must already be installed before running the protocol.
+- The random seed and RNG behavior are fixed.
+- Input files are checked before analysis.
+- File checksums are recorded.
+- Package versions are saved.
+- The R session information is exported.
+- Figures are saved in publication-quality formats.
+- Statistical annotations are reported directly in the figures and exported as tables.
+- Figure labels are generated in English.
+- The analysis log is written in Spanish.
+
+## Data used
+
+**Taxonomic data:**  
+GTDB-Bracken species-level abundance profiles.
+
+**Environmental data:**  
+Physicochemical soil variables.
+
+## Analytical decisions
+
+- Species-level Bracken abundance profiles are used.
+- Bracken abundances are processed at the sample level and later aggregated when required to match physicochemical units.
+- Hellinger transformation is applied before community-level multivariate analyses.
+- Bray-Curtis distances are used to evaluate microbial community structure.
+- Statistical results are interpreted cautiously because physicochemical data are available for a reduced number of environmental units.
+- All outputs are exported to fixed project folders.
+
+```{r reproducibility-settings}
+## Configuración estricta de reproducibilidad -----------------------------
+
+set.seed(12345)
+
+RNGkind(
+  kind = "Mersenne-Twister",
+  normal.kind = "Inversion",
+  sample.kind = "Rejection"
+)
+
+Sys.setenv(TZ = "America/Mexico_City")
+
+options(
+  stringsAsFactors = FALSE,
+  scipen = 999,
+  digits = 6
+)
+
+fecha_analisis <- Sys.Date()
+semilla_analisis <- 12345
+```
+
+```{r package-check}
+## Revisión estricta de paquetes ------------------------------------------
+
+paquetes_requeridos <- c(
+  "tidyverse",
+  "readxl",
+  "janitor",
+  "fs",
+  "here",
+  "tibble",
+  "vegan",
+  "ggplot2",
+  "ggrepel",
+  "scales"
+)
+
+paquetes_faltantes <- paquetes_requeridos[
+  !paquetes_requeridos %in% rownames(installed.packages())
+]
+
+if (length(paquetes_faltantes) > 0) {
+  stop(
+    paste0(
+      "Faltan los siguientes paquetes requeridos:\n",
+      paste(paquetes_faltantes, collapse = ", "),
+      "\n\nInstálalos manualmente antes de correr este Markdown.\n",
+      "Por reproducibilidad estricta, este protocolo no instala paquetes automáticamente."
+    )
+  )
+}
+
+invisible(lapply(paquetes_requeridos, library, character.only = TRUE))
+
+versiones_paquetes <- tibble::tibble(
+  paquete = paquetes_requeridos,
+  version = sapply(paquetes_requeridos, function(pkg) {
+    as.character(packageVersion(pkg))
+  })
+)
+```
+
+```{r project-paths}
+## Rutas fijas del proyecto ------------------------------------------------
+
+ruta_proyecto <- "/Users/ale/Desktop/kraken_gtdb/kraken_analysis_gtdb/Analisis_FQ_diversidad_gtdb"
+
+ruta_bracken <- "/Users/ale/Desktop/kraken_gtdb/kraken_analysis_gtdb/diversidad_bracken/bracken_especie"
+
+ruta_fq <- "/Users/ale/Desktop/kraken_gtdb/kraken_analysis_gtdb"
+
+ruta_datos <- file.path(ruta_proyecto, "datos")
+ruta_datos_especies <- file.path(ruta_datos, "especies")
+ruta_datos_fq <- file.path(ruta_datos, "fisicoquimicos")
+
+ruta_resultados <- file.path(ruta_proyecto, "resultados")
+ruta_tablas <- file.path(ruta_resultados, "tablas")
+ruta_figuras <- file.path(ruta_resultados, "figuras")
+ruta_estadisticos <- file.path(ruta_resultados, "estadisticos")
+ruta_qc <- file.path(ruta_resultados, "control_calidad")
+ruta_bitacora <- file.path(ruta_proyecto, "bitacora")
+
+dir_create(ruta_proyecto)
+dir_create(ruta_datos)
+dir_create(ruta_datos_especies)
+dir_create(ruta_datos_fq)
+dir_create(file.path(ruta_proyecto, "scripts"))
+dir_create(ruta_resultados)
+dir_create(ruta_tablas)
+dir_create(ruta_figuras)
+dir_create(ruta_estadisticos)
+dir_create(ruta_qc)
+dir_create(ruta_bitacora)
+
+archivo_bitacora <- file.path(
+  ruta_bitacora,
+  "Bitacora_analisis_FQ_diversidad.md"
+)
+```
+
+```{r input-directory-checks}
+## Revisión estricta de directorios de entrada ----------------------------
+
+directorios_requeridos <- c(
+  ruta_bracken,
+  ruta_fq
+)
+
+directorios_faltantes <- directorios_requeridos[
+  !dir.exists(directorios_requeridos)
+]
+
+if (length(directorios_faltantes) > 0) {
+  stop(
+    paste0(
+      "No se encontraron los siguientes directorios requeridos:\n",
+      paste(directorios_faltantes, collapse = "\n"),
+      "\n\nRevisa las rutas antes de continuar."
+    )
+  )
+}
+```
+
+```{r input-file-manifest}
+## Manifiesto inicial de archivos de entrada ------------------------------
+
+archivos_bracken_iniciales <- sort(
+  dir_ls(
+    ruta_bracken,
+    regexp = "\\.bracken$|\\.csv$"
+  )
+)
+
+archivos_fq_iniciales <- sort(
+  dir_ls(
+    ruta_fq,
+    regexp = "\\.xlsx$|\\.xls$"
+  )
+)
+
+if (length(archivos_bracken_iniciales) == 0) {
+  stop(
+    paste0(
+      "No se encontraron archivos Bracken o CSV en:\n",
+      ruta_bracken
+    )
+  )
+}
+
+if (length(archivos_fq_iniciales) == 0) {
+  stop(
+    paste0(
+      "No se encontraron archivos Excel fisicoquímicos en:\n",
+      ruta_fq
+    )
+  )
+}
+
+manifiesto_archivos_entrada <- tibble::tibble(
+  tipo_archivo = c(
+    rep("Bracken/taxonomic input", length(archivos_bracken_iniciales)),
+    rep("Physicochemical input", length(archivos_fq_iniciales))
+  ),
+  ruta_archivo = c(
+    archivos_bracken_iniciales,
+    archivos_fq_iniciales
+  )
+) %>%
+  mutate(
+    nombre_archivo = basename(ruta_archivo),
+    tamano_bytes = file.info(ruta_archivo)$size,
+    fecha_modificacion = as.character(file.info(ruta_archivo)$mtime),
+    md5_checksum = as.character(tools::md5sum(ruta_archivo))
+  )
+
+readr::write_tsv(
+  manifiesto_archivos_entrada,
+  file.path(ruta_qc, "00_manifiesto_archivos_entrada.tsv")
+)
+
+readr::write_tsv(
+  versiones_paquetes,
+  file.path(ruta_qc, "00_versiones_paquetes.tsv")
+)
+
+capture.output(
+  sessionInfo(),
+  file = file.path(ruta_qc, "00_session_info_inicial.txt")
+)
+```
+
+```{r publication-style}
+## Estilo de publicación ---------------------------------------------------
+
+colores_desierto <- c(
+  "Cuatro Ciénegas" = "#F8766D",
+  "Valle de Guadalupe" = "#00BFC4"
+)
+
+publication_theme <- function(base_size = 12) {
+  theme_classic(base_size = base_size) +
+    theme(
+      text = element_text(color = "black"),
+      axis.text = element_text(color = "black"),
+      axis.title = element_text(color = "black"),
+      axis.line = element_line(linewidth = 0.4, color = "black"),
+      axis.ticks = element_line(linewidth = 0.4, color = "black"),
+      legend.title = element_text(face = "bold"),
+      legend.position = "right",
+      plot.title = element_text(face = "bold", hjust = 0),
+      plot.subtitle = element_text(hjust = 0),
+      plot.caption = element_text(size = base_size * 0.8, hjust = 0)
+    )
+}
+
+format_p <- function(p) {
+  dplyr::case_when(
+    is.na(p) ~ "NA",
+    p < 0.001 ~ "< 0.001",
+    TRUE ~ formatC(p, format = "f", digits = 3)
+  )
+}
+
+save_publication_figure <- function(plot, filename, width = 7, height = 5) {
+  
+  ggsave(
+    filename = file.path(ruta_figuras, paste0(filename, ".pdf")),
+    plot = plot,
+    width = width,
+    height = height,
+    units = "in"
+  )
+  
+  ggsave(
+    filename = file.path(ruta_figuras, paste0(filename, ".tiff")),
+    plot = plot,
+    width = width,
+    height = height,
+    units = "in",
+    dpi = 600,
+    compression = "lzw"
+  )
+  
+  ggsave(
+    filename = file.path(ruta_figuras, paste0(filename, ".jpg")),
+    plot = plot,
+    width = width,
+    height = height,
+    units = "in",
+    dpi = 600
+  )
+}
+```
+
+```{r initialize-log}
+## Crear bitácora inicial en español --------------------------------------
+
+writeLines(
+  c(
+    "# Bitácora de análisis FQ-diversidad microbiana",
+    "",
+    "## Parte 0. Configuración reproducible del análisis",
+    "",
+    paste("Fecha de análisis:", fecha_analisis),
+    paste("Semilla aleatoria fijada:", semilla_analisis),
+    paste("Zona horaria:", Sys.getenv("TZ")),
+    "",
+    "### Objetivo general",
+    "",
+    "Evaluar la relación entre la composición microbiana estimada con perfiles GTDB-Bracken a nivel de especie y las variables fisicoquímicas del suelo.",
+    "",
+    "### Política de reproducibilidad estricta",
+    "",
+    "- El protocolo no instala paquetes automáticamente.",
+    "- Todos los paquetes requeridos se revisan antes de iniciar el análisis.",
+    "- La semilla aleatoria y el comportamiento del generador de números aleatorios fueron fijados.",
+    "- Las rutas de entrada y salida fueron definidas explícitamente.",
+    "- Los directorios requeridos fueron verificados antes de continuar.",
+    "- Se generó un manifiesto de archivos de entrada.",
+    "- Se calcularon checksums MD5 para los archivos detectados.",
+    "- Se exportaron las versiones de los paquetes utilizados.",
+    "- Se exportó la información inicial de la sesión de R.",
+    "- Las figuras se guardarán en PDF, TIFF y JPG con calidad de publicación.",
+    "- Las etiquetas de las figuras estarán en inglés.",
+    "- Los mensajes de esta bitácora permanecerán en español.",
+    "",
+    "### Rutas usadas",
+    "",
+    paste("- Proyecto:", ruta_proyecto),
+    paste("- Datos Bracken:", ruta_bracken),
+    paste("- Datos fisicoquímicos:", ruta_fq),
+    paste("- Tablas:", ruta_tablas),
+    paste("- Figuras:", ruta_figuras),
+    paste("- Estadísticos:", ruta_estadisticos),
+    paste("- Control de calidad:", ruta_qc),
+    "",
+    "### Archivos de control generados",
+    "",
+    "- 00_manifiesto_archivos_entrada.tsv",
+    "- 00_versiones_paquetes.tsv",
+    "- 00_session_info_inicial.txt"
+  ),
+  archivo_bitacora
+)
+```
+
+## Section 1. Reproducible data import
+
+Objective: import the taxonomic species-level matrix and the physicochemical soil table using fixed input files, strict checks, and reproducible output tables.
+
+```{r section-1-fixed-input-files}
+## Sección 1. Archivos de entrada fijos ----------------------------------
+
+archivo_matriz_bracken <- file.path(
+  ruta_bracken,
+  "02_matrix_species_reads_filtered.csv"
+)
+
+archivo_fq <- file.path(
+  ruta_fq,
+  "Analisis_fisicoquimicos_desiertos.xlsx"
+)
+
+archivos_requeridos_seccion1 <- c(
+  archivo_matriz_bracken,
+  archivo_fq
+)
+
+archivos_faltantes_seccion1 <- archivos_requeridos_seccion1[
+  !file.exists(archivos_requeridos_seccion1)
+]
+
+if (length(archivos_faltantes_seccion1) > 0) {
+  stop(
+    paste0(
+      "No se encontraron los siguientes archivos requeridos para la Sección 1:\n",
+      paste(archivos_faltantes_seccion1, collapse = "\n"),
+      "\n\nRevisa las rutas antes de continuar."
+    )
+  )
+}
+
+manifest_seccion1 <- tibble::tibble(
+  tipo_archivo = c(
+    "Matriz taxonómica Bracken filtrada",
+    "Tabla fisicoquímica"
+  ),
+  ruta_archivo = archivos_requeridos_seccion1,
+  nombre_archivo = basename(archivos_requeridos_seccion1),
+  tamano_bytes = file.info(archivos_requeridos_seccion1)$size,
+  fecha_modificacion = as.character(file.info(archivos_requeridos_seccion1)$mtime),
+  md5_checksum = as.character(tools::md5sum(archivos_requeridos_seccion1))
+)
+
+readr::write_tsv(
+  manifest_seccion1,
+  file.path(ruta_qc, "01_manifest_archivos_importacion.tsv")
+)
+
+manifest_seccion1
+```
+
+```{r diagnostico-nombres-columnas-bracken}
+## Diagnóstico temporal: nombres reales de columnas Bracken ---------------
+
+matriz_especies_raw_diagnostico <- readr::read_csv(
+  archivo_matriz_bracken,
+  show_col_types = FALSE,
+  name_repair = "unique"
+)
+
+diagnostico_columnas_bracken <- tibble::tibble(
+  numero_columna = seq_along(names(matriz_especies_raw_diagnostico)),
+  nombre_columna = names(matriz_especies_raw_diagnostico),
+  clase_columna = purrr::map_chr(
+    matriz_especies_raw_diagnostico,
+    ~ paste(class(.x), collapse = "; ")
+  ),
+  primeros_valores = purrr::map_chr(
+    matriz_especies_raw_diagnostico,
+    ~ paste(head(as.character(.x), 3), collapse = " | ")
+  )
+)
+
+readr::write_tsv(
+  diagnostico_columnas_bracken,
+  file.path(ruta_qc, "01_diagnostico_nombres_columnas_bracken.tsv")
+)
+
+diagnostico_columnas_bracken
+```
+
+```{r section-1-import-taxonomic-matrix}
+## Sección 1. Importar matriz taxonómica ---------------------------------
+
+matriz_especies_raw <- readr::read_csv(
+  archivo_matriz_bracken,
+  show_col_types = FALSE,
+  name_repair = "unique"
+)
+
+dim(matriz_especies_raw)
+names(matriz_especies_raw)[1:min(20, ncol(matriz_especies_raw))]
+
+## Mapa explícito de muestras ---------------------------------------------
+## La matriz ya contiene nombres biológicos corregidos:
+## A1_CC, A2_CC, A3_CC, ..., F3_VG.
+## Se usa un mapa explícito para evitar inferencias automáticas.
+
+mapa_muestras_taxonomia <- tibble::tribble(
+  ~columna_original, ~Muestra, ~Desierto, ~Cuadrante, ~Unidad,
+  "A1_CC", "A1_CC", "CC", "A", "CC_A",
+  "A2_CC", "A2_CC", "CC", "A", "CC_A",
+  "A3_CC", "A3_CC", "CC", "A", "CC_A",
+  "B1_CC", "B1_CC", "CC", "B", "CC_B",
+  "B2_CC", "B2_CC", "CC", "B", "CC_B",
+  "B3_CC", "B3_CC", "CC", "B", "CC_B",
+  "C1_CC", "C1_CC", "CC", "C", "CC_C",
+  "C2_CC", "C2_CC", "CC", "C", "CC_C",
+  "C3_CC", "C3_CC", "CC", "C", "CC_C",
+  "D1_VG", "D1_VG", "VG", "D", "VG_D",
+  "D2_VG", "D2_VG", "VG", "D", "VG_D",
+  "D3_VG", "D3_VG", "VG", "D", "VG_D",
+  "E1_VG", "E1_VG", "VG", "E", "VG_E",
+  "E2_VG", "E2_VG", "VG", "E", "VG_E",
+  "E3_VG", "E3_VG", "VG", "E", "VG_E",
+  "F1_VG", "F1_VG", "VG", "F", "VG_F",
+  "F2_VG", "F2_VG", "VG", "F", "VG_F",
+  "F3_VG", "F3_VG", "VG", "F", "VG_F"
+)
+
+## Verificar columnas obligatorias ----------------------------------------
+
+columnas_muestras_esperadas <- mapa_muestras_taxonomia$columna_original
+
+columnas_muestras_presentes <- intersect(
+  columnas_muestras_esperadas,
+  names(matriz_especies_raw)
+)
+
+if (length(columnas_muestras_presentes) != 18) {
+  columnas_faltantes <- setdiff(
+    columnas_muestras_esperadas,
+    columnas_muestras_presentes
+  )
+  
+  stop(
+    paste0(
+      "No se encontraron las 18 columnas de muestras esperadas en la matriz taxonómica.\n",
+      "Columnas encontradas: ",
+      paste(columnas_muestras_presentes, collapse = ", "),
+      "\nColumnas faltantes: ",
+      paste(columnas_faltantes, collapse = ", "),
+      "\n\nRevisa los nombres de columnas del archivo 02_matrix_species_reads_filtered.csv."
+    )
+  )
+}
+
+if (!"name" %in% names(matriz_especies_raw)) {
+  stop(
+    paste0(
+      "No se encontró la columna taxonómica 'name'. ",
+      "Esta columna es necesaria para nombrar las especies/taxones."
+    )
+  )
+}
+
+if (!"taxonomy_id" %in% names(matriz_especies_raw)) {
+  stop(
+    paste0(
+      "No se encontró la columna 'taxonomy_id'. ",
+      "Esta columna se conservará como identificador taxonómico en control de calidad."
+    )
+  )
+}
+
+## Revisar nombres taxonómicos --------------------------------------------
+
+taxa_originales <- as.character(matriz_especies_raw$name)
+
+if (any(is.na(taxa_originales)) || any(taxa_originales == "")) {
+  stop("La columna taxonómica 'name' contiene valores vacíos o NA.")
+}
+
+taxa_unicos <- make.unique(taxa_originales)
+
+## Construir matriz muestra x especie -------------------------------------
+## La matriz original está en formato especies x muestras.
+## Para los análisis multivariados se transpone a muestras x especies.
+
+matriz_especies_transpuesta <- matriz_especies_raw %>%
+  dplyr::select(dplyr::all_of(columnas_muestras_esperadas)) %>%
+  dplyr::mutate(
+    dplyr::across(
+      dplyr::everything(),
+      ~ suppressWarnings(as.numeric(.x))
+    )
+  )
+
+na_taxonomia <- sum(is.na(matriz_especies_transpuesta))
+
+if (na_taxonomia > 0) {
+  stop(
+    paste0(
+      "La matriz taxonómica contiene valores no numéricos convertidos a NA: ",
+      na_taxonomia,
+      ". Revisa el archivo de entrada antes de continuar."
+    )
+  )
+}
+
+matriz_especies <- as.data.frame(t(matriz_especies_transpuesta))
+colnames(matriz_especies) <- taxa_unicos
+
+matriz_especies <- matriz_especies %>%
+  tibble::rownames_to_column("columna_original") %>%
+  tibble::as_tibble() %>%
+  dplyr::left_join(
+    mapa_muestras_taxonomia,
+    by = "columna_original"
+  ) %>%
+  dplyr::relocate(
+    Muestra,
+    Desierto,
+    Cuadrante,
+    Unidad,
+    columna_original
+  )
+
+if (any(is.na(matriz_especies$Muestra))) {
+  stop("Algunas columnas de muestra no pudieron vincularse con el mapa explícito.")
+}
+
+columnas_especies <- setdiff(
+  names(matriz_especies),
+  c("Muestra", "Desierto", "Cuadrante", "Unidad", "columna_original")
+)
+
+## Guardar tabla taxonómica de referencia ---------------------------------
+
+tabla_taxonomia_referencia <- matriz_especies_raw %>%
+  dplyr::select(
+    taxonomy_id,
+    name
+  ) %>%
+  dplyr::mutate(
+    name_unique = taxa_unicos
+  )
+
+readr::write_tsv(
+  mapa_muestras_taxonomia,
+  file.path(ruta_qc, "01_mapa_explicito_muestras_taxonomia.tsv")
+)
+
+readr::write_tsv(
+  tabla_taxonomia_referencia,
+  file.path(ruta_qc, "01_tabla_taxonomia_referencia.tsv")
+)
+
+## Diagnóstico reproducible -----------------------------------------------
+
+diagnostico_matriz_taxonomica <- tibble::tibble(
+  elemento = c(
+    "Orientación original detectada",
+    "Orientación usada para análisis",
+    "Columna taxonómica usada",
+    "Columna de identificador taxonómico",
+    "Número de muestras",
+    "Número de especies/taxones",
+    "Número de desiertos",
+    "Número de unidades ambientales",
+    "Total de lecturas/importes en matriz"
+  ),
+  valor = c(
+    "especies x muestras",
+    "muestras x especies",
+    "name",
+    "taxonomy_id",
+    as.character(nrow(matriz_especies)),
+    as.character(length(columnas_especies)),
+    as.character(dplyr::n_distinct(matriz_especies$Desierto)),
+    as.character(dplyr::n_distinct(matriz_especies$Unidad)),
+    as.character(sum(as.matrix(matriz_especies[, columnas_especies])))
+  )
+)
+
+readr::write_tsv(
+  diagnostico_matriz_taxonomica,
+  file.path(ruta_qc, "01_diagnostico_matriz_taxonomica.tsv")
+)
+
+dim(matriz_especies)
+diagnostico_matriz_taxonomica
+matriz_especies[, 1:8]
+```
+
+```{r section-1-import-physicochemical-data}
+## Sección 1. Importar datos fisicoquímicos ------------------------------
+
+hoja_fq <- 1
+
+fq_raw <- readxl::read_excel(
+  archivo_fq,
+  sheet = hoja_fq,
+  col_names = TRUE
+)
+
+fq <- fq_raw %>%
+  janitor::clean_names()
+
+columnas_obligatorias_fq <- c("sitio", "cuadrante")
+
+columnas_faltantes_fq <- setdiff(
+  columnas_obligatorias_fq,
+  names(fq)
+)
+
+if (length(columnas_faltantes_fq) > 0) {
+  stop(
+    paste0(
+      "Faltan columnas obligatorias en la tabla fisicoquímica:\n",
+      paste(columnas_faltantes_fq, collapse = ", "),
+      "\n\nLa tabla debe contener al menos: sitio y cuadrante."
+    )
+  )
+}
+
+fq_limpio <- fq %>%
+  dplyr::filter(sitio %in% c("CC", "VG")) %>%
+  dplyr::mutate(
+    Desierto = sitio,
+    Cuadrante = as.character(cuadrante),
+    Unidad = paste0(Desierto, "_", Cuadrante)
+  )
+
+if (nrow(fq_limpio) == 0) {
+  stop("Después de filtrar sitio == CC o VG, la tabla fisicoquímica quedó vacía.")
+}
+
+if (anyDuplicated(fq_limpio$Unidad) > 0) {
+  stop("La tabla fisicoquímica contiene unidades duplicadas.")
+}
+
+columnas_fq_objetivo <- c(
+  "p_h",
+  "ce",
+  "m_o",
+  "n",
+  "p",
+  "k",
+  "ca",
+  "mg",
+  "na",
+  "cic",
+  "fe",
+  "n_no3",
+  "n_nh4",
+  "pt",
+  "ct",
+  "arena",
+  "limo",
+  "arcilla"
+)
+
+columnas_fq_presentes <- intersect(
+  columnas_fq_objetivo,
+  names(fq_limpio)
+)
+
+columnas_fq_ausentes <- setdiff(
+  columnas_fq_objetivo,
+  names(fq_limpio)
+)
+
+if (length(columnas_fq_presentes) == 0) {
+  stop("No se encontró ninguna variable fisicoquímica numérica esperada.")
+}
+
+fq_num <- fq_limpio %>%
+  dplyr::mutate(
+    dplyr::across(
+      dplyr::all_of(columnas_fq_presentes),
+      ~ readr::parse_number(
+        stringr::str_replace_all(as.character(.x), ",", "."),
+        locale = readr::locale(decimal_mark = ".")
+      )
+    )
+  )
+
+metadata_fq <- fq_num %>%
+  dplyr::select(
+    Unidad,
+    Desierto,
+    Cuadrante,
+    dplyr::any_of("clasificacion_textural")
+  )
+
+env <- fq_num %>%
+  dplyr::select(
+    Unidad,
+    dplyr::all_of(columnas_fq_presentes)
+  )
+
+dim(metadata_fq)
+dim(env)
+
+metadata_fq
+summary(env)
+```
+
+```{r section-1-aggregate-taxonomy-to-environmental-units}
+## Sección 1. Agregar matriz taxonómica por unidad ambiental -------------
+
+matriz_especies_unidad <- matriz_especies %>%
+  dplyr::mutate(
+    Cuadrante = stringr::str_extract(Muestra, "^[A-Z]"),
+    Desierto = stringr::str_extract(Muestra, "CC|VG"),
+    Unidad = paste0(Desierto, "_", Cuadrante)
+  )
+
+muestras_sin_unidad <- matriz_especies_unidad %>%
+  dplyr::filter(
+    is.na(Cuadrante) |
+      is.na(Desierto) |
+      is.na(Unidad)
+  ) %>%
+  dplyr::select(Muestra, Cuadrante, Desierto, Unidad)
+
+if (nrow(muestras_sin_unidad) > 0) {
+  print(muestras_sin_unidad)
+  stop(
+    paste0(
+      "Algunas muestras no pudieron asignarse a una unidad ambiental. ",
+      "Revisa los nombres de muestra."
+    )
+  )
+}
+
+tabla_muestra_unidad <- matriz_especies_unidad %>%
+  dplyr::select(Muestra, Desierto, Cuadrante, Unidad) %>%
+  dplyr::arrange(Unidad, Muestra)
+
+readr::write_tsv(
+  tabla_muestra_unidad,
+  file.path(ruta_qc, "01_asignacion_muestras_a_unidades.tsv")
+)
+
+matriz_especies_agregada <- matriz_especies_unidad %>%
+  dplyr::select(-Muestra, -Desierto, -Cuadrante) %>%
+  dplyr::group_by(Unidad) %>%
+  dplyr::summarise(
+    dplyr::across(
+      where(is.numeric),
+      ~ sum(.x, na.rm = TRUE)
+    ),
+    .groups = "drop"
+  )
+
+dim(matriz_especies_agregada)
+tabla_muestra_unidad
+```
+
+```{r section-1-match-taxonomy-and-environment}
+## Sección 1. Verificar coincidencia entre matrices ----------------------
+
+unidades_taxonomia <- sort(matriz_especies_agregada$Unidad)
+unidades_fq <- sort(env$Unidad)
+
+unidades_solo_taxonomia <- setdiff(unidades_taxonomia, unidades_fq)
+unidades_solo_fq <- setdiff(unidades_fq, unidades_taxonomia)
+
+if (length(unidades_solo_taxonomia) > 0 | length(unidades_solo_fq) > 0) {
+  
+  tabla_unidades_no_coincidentes <- tibble::tibble(
+    problema = c(
+      rep("Solo en taxonomía", length(unidades_solo_taxonomia)),
+      rep("Solo en fisicoquímica", length(unidades_solo_fq))
+    ),
+    unidad = c(
+      unidades_solo_taxonomia,
+      unidades_solo_fq
+    )
+  )
+  
+  readr::write_tsv(
+    tabla_unidades_no_coincidentes,
+    file.path(ruta_qc, "01_unidades_no_coincidentes.tsv")
+  )
+  
+  print(tabla_unidades_no_coincidentes)
+  
+  stop(
+    paste0(
+      "Las unidades ambientales no coinciden exactamente entre taxonomía ",
+      "y fisicoquímica. Revisa el archivo 01_unidades_no_coincidentes.tsv."
+    )
+  )
+}
+
+unidades_comunes <- intersect(
+  matriz_especies_agregada$Unidad,
+  env$Unidad
+)
+
+micro <- matriz_especies_agregada %>%
+  dplyr::filter(Unidad %in% unidades_comunes) %>%
+  dplyr::arrange(Unidad) %>%
+  tibble::column_to_rownames("Unidad")
+
+env_final <- env %>%
+  dplyr::filter(Unidad %in% unidades_comunes) %>%
+  dplyr::arrange(Unidad) %>%
+  tibble::column_to_rownames("Unidad")
+
+metadata_final <- metadata_fq %>%
+  dplyr::filter(Unidad %in% unidades_comunes) %>%
+  dplyr::arrange(Unidad) %>%
+  tibble::column_to_rownames("Unidad")
+
+if (!identical(rownames(micro), rownames(env_final))) {
+  stop("El orden de filas no coincide entre micro y env_final.")
+}
+
+if (!identical(rownames(micro), rownames(metadata_final))) {
+  stop("El orden de filas no coincide entre micro y metadata_final.")
+}
+
+dim(micro)
+dim(env_final)
+dim(metadata_final)
+
+rownames(micro)
+```
+
+```{r section-1-export-clean-imported-tables}
+## Sección 1. Exportar tablas limpias y congeladas -----------------------
+
+readr::write_csv(
+  matriz_especies,
+  file.path(ruta_tablas, "01_matriz_especies_bracken_importada_muestras.csv")
+)
+
+readr::write_csv(
+  matriz_especies_agregada,
+  file.path(ruta_tablas, "01_matriz_especies_por_unidad_FQ.csv")
+)
+
+readr::write_csv(
+  tibble::rownames_to_column(env_final, "Unidad"),
+  file.path(ruta_tablas, "01_matriz_fq_final_por_unidad.csv")
+)
+
+readr::write_csv(
+  tibble::rownames_to_column(metadata_final, "Unidad"),
+  file.path(ruta_tablas, "01_metadata_final_por_unidad.csv")
+)
+
+saveRDS(
+  micro,
+  file.path(ruta_tablas, "01_micro_especies_por_unidad_FQ.rds")
+)
+
+saveRDS(
+  env_final,
+  file.path(ruta_tablas, "01_env_final_por_unidad.rds")
+)
+
+saveRDS(
+  metadata_final,
+  file.path(ruta_tablas, "01_metadata_final_por_unidad.rds")
+)
+
+diagnostico_importacion <- tibble::tibble(
+  elemento = c(
+    "Archivo matriz taxonómica",
+    "Archivo fisicoquímico",
+    "Hoja Excel usada",
+    "Muestras taxonómicas importadas",
+    "Especies/columnas taxonómicas importadas",
+    "Unidades ambientales finales",
+    "Variables fisicoquímicas finales",
+    "Variables fisicoquímicas esperadas ausentes",
+    "NA en matriz microbiana final",
+    "NA en matriz fisicoquímica final"
+  ),
+  valor = c(
+    archivo_matriz_bracken,
+    archivo_fq,
+    as.character(hoja_fq),
+    as.character(nrow(matriz_especies)),
+    as.character(ncol(matriz_especies) - 1),
+    as.character(nrow(micro)),
+    as.character(ncol(env_final)),
+    ifelse(
+      length(columnas_fq_ausentes) == 0,
+      "Ninguna",
+      paste(columnas_fq_ausentes, collapse = ", ")
+    ),
+    as.character(sum(is.na(micro))),
+    as.character(sum(is.na(env_final)))
+  )
+)
+
+readr::write_tsv(
+  diagnostico_importacion,
+  file.path(ruta_qc, "01_diagnostico_importacion.tsv")
+)
+
+diagnostico_importacion
+```
+
+```{r section-1-update-log}
+## Sección 1. Registrar importación en bitácora --------------------------
+
+write(
+  c(
+    "",
+    "## Parte 1. Importación reproducible de datos",
+    "",
+    paste("Fecha:", Sys.Date()),
+    "",
+    "### Objetivo",
+    "",
+    "Importar de forma reproducible la matriz taxonómica Bracken a nivel de especie y la tabla fisicoquímica del suelo.",
+    "",
+    "### Archivos de entrada usados",
+    "",
+    paste("- Matriz taxonómica:", archivo_matriz_bracken),
+    paste("- Tabla fisicoquímica:", archivo_fq),
+    paste("- Hoja de Excel usada:", hoja_fq),
+    "",
+    "### Revisión de reproducibilidad",
+    "",
+    "- Se usaron rutas explícitas para los archivos de entrada.",
+    "- No se seleccionó automáticamente el primer archivo disponible.",
+    "- Se registraron tamaño, fecha de modificación y checksum MD5 de los archivos.",
+    "- Se verificó que las unidades ambientales coincidieran entre taxonomía y fisicoquímica.",
+    "- Se detuvo el análisis si existían unidades no coincidentes.",
+    "- Se guardaron tablas limpias en CSV y objetos congelados en RDS.",
+    "",
+    "### Decisión metodológica",
+    "",
+    "La tabla fisicoquímica contiene unidades ambientales agregadas por cuadrante/desierto.",
+    "Por esa razón, las muestras taxonómicas individuales se agregaron por unidad ambiental.",
+    "",
+    "Ejemplos:",
+    "- A1_CC + A2_CC + A3_CC = CC_A",
+    "- B1_CC + B2_CC + B3_CC = CC_B",
+    "- D1_VG + D2_VG + D3_VG = VG_D",
+    "",
+    "### Dimensiones finales",
+    "",
+    paste("Matriz microbiana final:", paste(dim(micro), collapse = " x ")),
+    paste("Matriz fisicoquímica final:", paste(dim(env_final), collapse = " x ")),
+    paste("Metadata final:", paste(dim(metadata_final), collapse = " x ")),
+    "",
+    "### Archivos generados",
+    "",
+    "- 01_manifest_archivos_importacion.tsv",
+    "- 01_asignacion_muestras_a_unidades.tsv",
+    "- 01_matriz_especies_bracken_importada_muestras.csv",
+    "- 01_matriz_especies_por_unidad_FQ.csv",
+    "- 01_matriz_fq_final_por_unidad.csv",
+    "- 01_metadata_final_por_unidad.csv",
+    "- 01_micro_especies_por_unidad_FQ.rds",
+    "- 01_env_final_por_unidad.rds",
+    "- 01_metadata_final_por_unidad.rds",
+    "- 01_diagnostico_importacion.tsv"
+  ),
+  archivo_bitacora,
+  append = TRUE
+)
+```
+
+## Section 2. Quality control, transformation, and alpha diversity
+
+Objective: perform reproducible quality control of the microbial and physicochemical matrices, apply Hellinger transformation to community data, and evaluate alpha diversity patterns between deserts.
+
+```{r section-2-load-clean-objects}
+## Sección 2. Cargar objetos congelados de la Sección 1 -------------------
+
+micro <- readRDS(
+  file.path(ruta_tablas, "01_micro_especies_por_unidad_FQ.rds")
+)
+
+env_final <- readRDS(
+  file.path(ruta_tablas, "01_env_final_por_unidad.rds")
+)
+
+metadata_final <- readRDS(
+  file.path(ruta_tablas, "01_metadata_final_por_unidad.rds")
+)
+
+if (!identical(rownames(micro), rownames(env_final))) {
+  stop("El orden de filas no coincide entre micro y env_final.")
+}
+
+if (!identical(rownames(micro), rownames(metadata_final))) {
+  stop("El orden de filas no coincide entre micro y metadata_final.")
+}
+
+dim(micro)
+dim(env_final)
+dim(metadata_final)
+```
+
+```{r section-2-microbial-qc}
+## Sección 2. Control de calidad de matriz microbiana ---------------------
+
+micro_matrix <- as.matrix(micro)
+
+storage.mode(micro_matrix) <- "numeric"
+
+if (any(is.na(micro_matrix))) {
+  stop("La matriz microbiana contiene NA. Revisa la importación antes de continuar.")
+}
+
+if (any(micro_matrix < 0)) {
+  stop("La matriz microbiana contiene valores negativos. Esto no es válido para abundancias.")
+}
+
+profundidad_lectura <- tibble::tibble(
+  Unidad = rownames(micro_matrix),
+  Total_reads = rowSums(micro_matrix),
+  Observed_taxa_raw = rowSums(micro_matrix > 0)
+) %>%
+  dplyr::left_join(
+    tibble::rownames_to_column(metadata_final, "Unidad"),
+    by = "Unidad"
+  ) %>%
+  dplyr::mutate(
+    Desert = dplyr::recode(
+      Desierto,
+      "CC" = "Cuatro Ciénegas",
+      "VG" = "Valle de Guadalupe"
+    )
+  )
+
+taxa_totales <- colSums(micro_matrix)
+taxa_cero_total <- names(taxa_totales[taxa_totales == 0])
+
+micro_matrix_qc <- micro_matrix[, taxa_totales > 0, drop = FALSE]
+
+if (ncol(micro_matrix_qc) == 0) {
+  stop("Después de remover taxones con suma total cero, la matriz microbiana quedó vacía.")
+}
+
+diagnostico_micro_qc <- tibble::tibble(
+  elemento = c(
+    "Unidades ambientales",
+    "Taxones antes del filtro",
+    "Taxones con suma total cero",
+    "Taxones después del filtro",
+    "Reads totales mínimos por unidad",
+    "Reads totales máximos por unidad",
+    "Reads totales promedio por unidad"
+  ),
+  valor = c(
+    as.character(nrow(micro_matrix)),
+    as.character(ncol(micro_matrix)),
+    as.character(length(taxa_cero_total)),
+    as.character(ncol(micro_matrix_qc)),
+    as.character(min(profundidad_lectura$Total_reads)),
+    as.character(max(profundidad_lectura$Total_reads)),
+    as.character(round(mean(profundidad_lectura$Total_reads), 2))
+  )
+)
+
+readr::write_tsv(
+  profundidad_lectura,
+  file.path(ruta_qc, "02_profundidad_lectura_por_unidad.tsv")
+)
+
+readr::write_tsv(
+  diagnostico_micro_qc,
+  file.path(ruta_qc, "02_diagnostico_microbioma_qc.tsv")
+)
+
+if (length(taxa_cero_total) > 0) {
+  readr::write_tsv(
+    tibble::tibble(taxon_removido = taxa_cero_total),
+    file.path(ruta_qc, "02_taxones_suma_total_cero_removidos.tsv")
+  )
+}
+
+diagnostico_micro_qc
+profundidad_lectura
+```
+
+
+
+# Sección 2A. Diversidad alfa a nivel de muestra para publicación
+
+Pega estos chunks completos:
+
+
+```{r section-2A-load-sample-level-taxonomy}
+## Sección 2A. Cargar matriz taxonómica a nivel de muestra ----------------
+
+matriz_especies_muestras <- readr::read_csv(
+  file.path(ruta_tablas, "01_matriz_especies_bracken_importada_muestras.csv"),
+  show_col_types = FALSE
+)
+
+columnas_metadata_muestras <- c(
+  "Muestra",
+  "Desierto",
+  "Cuadrante",
+  "Unidad",
+  "columna_original"
+)
+
+columnas_taxa_muestras <- setdiff(
+  names(matriz_especies_muestras),
+  columnas_metadata_muestras
+)
+
+if (length(columnas_taxa_muestras) == 0) {
+  stop("No se detectaron columnas taxonómicas en la matriz a nivel de muestra.")
+}
+
+metadata_muestras_alpha <- matriz_especies_muestras %>%
+  dplyr::select(
+    dplyr::all_of(columnas_metadata_muestras)
+  ) %>%
+  dplyr::mutate(
+    Desert = dplyr::recode(
+      Desierto,
+      "CC" = "Cuatro Ciénegas",
+      "VG" = "Valle de Guadalupe"
+    ),
+    Desert = factor(
+      Desert,
+      levels = c("Cuatro Ciénegas", "Valle de Guadalupe")
+    )
+  )
+
+micro_muestras_alpha <- matriz_especies_muestras %>%
+  dplyr::select(
+    dplyr::all_of(columnas_taxa_muestras)
+  ) %>%
+  as.data.frame()
+
+rownames(micro_muestras_alpha) <- matriz_especies_muestras$Muestra
+
+micro_muestras_alpha <- as.matrix(micro_muestras_alpha)
+storage.mode(micro_muestras_alpha) <- "numeric"
+
+if (any(is.na(micro_muestras_alpha))) {
+  stop("La matriz microbiana a nivel de muestra contiene NA.")
+}
+
+if (any(micro_muestras_alpha < 0)) {
+  stop("La matriz microbiana a nivel de muestra contiene valores negativos.")
+}
+
+taxa_suma_muestras <- colSums(micro_muestras_alpha)
+
+micro_muestras_alpha_qc <- micro_muestras_alpha[
+  ,
+  taxa_suma_muestras > 0,
+  drop = FALSE
+]
+
+diagnostico_alpha_muestras <- tibble::tibble(
+  elemento = c(
+    "Nivel de análisis",
+    "Número de muestras",
+    "Número de muestras CC",
+    "Número de muestras VG",
+    "Taxones antes del filtro",
+    "Taxones con suma total cero",
+    "Taxones retenidos",
+    "Reads totales"
+  ),
+  valor = c(
+    "Muestra individual",
+    as.character(nrow(micro_muestras_alpha_qc)),
+    as.character(sum(metadata_muestras_alpha$Desierto == "CC")),
+    as.character(sum(metadata_muestras_alpha$Desierto == "VG")),
+    as.character(ncol(micro_muestras_alpha)),
+    as.character(sum(taxa_suma_muestras == 0)),
+    as.character(ncol(micro_muestras_alpha_qc)),
+    as.character(sum(micro_muestras_alpha_qc))
+  )
+)
+
+readr::write_tsv(
+  diagnostico_alpha_muestras,
+  file.path(ruta_qc, "02A_diagnostico_alpha_muestras.tsv")
+)
+
+diagnostico_alpha_muestras
+```
+```{r}
+## Sección 2A. Calcular diversidad alfa a nivel de muestra ----------------
+
+alpha_muestras <- tibble::tibble(
+  Muestra = rownames(micro_muestras_alpha_qc),
+  Observed_taxa = rowSums(micro_muestras_alpha_qc > 0),
+  Shannon = vegan::diversity(
+    micro_muestras_alpha_qc,
+    index = "shannon"
+  ),
+  Simpson = vegan::diversity(
+    micro_muestras_alpha_qc,
+    index = "simpson"
+  ),
+  Total_reads = rowSums(micro_muestras_alpha_qc)
+) %>%
+  dplyr::mutate(
+    Pielou_evenness = Shannon / log(Observed_taxa)
+  ) %>%
+  dplyr::left_join(
+    metadata_muestras_alpha,
+    by = "Muestra"
+  )
+
+if (any(is.na(alpha_muestras$Shannon))) {
+  stop("Se generaron valores NA en Shannon.")
+}
+
+readr::write_csv(
+  alpha_muestras,
+  file.path(ruta_tablas, "02A_alpha_diversity_sample_level.csv")
+)
+
+alpha_muestras
+```
+```{r}
+## Sección 2A. Estadísticos Shannon a nivel de muestra --------------------
+
+calcular_cliffs_delta_direccion <- function(x, grupo, grupo_referencia, grupo_comparacion) {
+  
+  x_ref <- x[grupo == grupo_referencia]
+  x_comp <- x[grupo == grupo_comparacion]
+  
+  comparaciones <- outer(x_ref, x_comp, "-")
+  
+  delta <- (
+    sum(comparaciones > 0) -
+      sum(comparaciones < 0)
+  ) / length(comparaciones)
+  
+  return(delta)
+}
+
+alpha_shannon_stats_data <- alpha_muestras %>%
+  dplyr::select(
+    Muestra,
+    Desert,
+    Shannon
+  ) %>%
+  dplyr::filter(!is.na(Shannon))
+
+wilcox_shannon <- stats::wilcox.test(
+  Shannon ~ Desert,
+  data = alpha_shannon_stats_data,
+  exact = FALSE,
+  conf.int = TRUE,
+  conf.level = 0.95
+)
+
+resumen_shannon_desierto <- alpha_shannon_stats_data %>%
+  dplyr::group_by(Desert) %>%
+  dplyr::summarise(
+    n = dplyr::n(),
+    mean = mean(Shannon),
+    median = median(Shannon),
+    sd = sd(Shannon),
+    min = min(Shannon),
+    max = max(Shannon),
+    .groups = "drop"
+  )
+
+mediana_cc <- resumen_shannon_desierto$median[
+  resumen_shannon_desierto$Desert == "Cuatro Ciénegas"
+]
+
+mediana_vg <- resumen_shannon_desierto$median[
+  resumen_shannon_desierto$Desert == "Valle de Guadalupe"
+]
+
+delta_mediana_cc_minus_vg <- mediana_cc - mediana_vg
+
+cliffs_delta_cc_vs_vg <- calcular_cliffs_delta_direccion(
+  x = alpha_shannon_stats_data$Shannon,
+  grupo = alpha_shannon_stats_data$Desert,
+  grupo_referencia = "Cuatro Ciénegas",
+  grupo_comparacion = "Valle de Guadalupe"
+)
+
+alpha_shannon_statistics <- tibble::tibble(
+  metric = "Shannon diversity",
+  level = "Individual metagenomic sample",
+  test = "Wilcoxon rank-sum test",
+  n_CC = resumen_shannon_desierto$n[
+    resumen_shannon_desierto$Desert == "Cuatro Ciénegas"
+  ],
+  n_VG = resumen_shannon_desierto$n[
+    resumen_shannon_desierto$Desert == "Valle de Guadalupe"
+  ],
+  mean_CC = resumen_shannon_desierto$mean[
+    resumen_shannon_desierto$Desert == "Cuatro Ciénegas"
+  ],
+  mean_VG = resumen_shannon_desierto$mean[
+    resumen_shannon_desierto$Desert == "Valle de Guadalupe"
+  ],
+  median_CC = mediana_cc,
+  median_VG = mediana_vg,
+  median_difference_CC_minus_VG = delta_mediana_cc_minus_vg,
+  wilcoxon_W = unname(wilcox_shannon$statistic),
+  p_value = wilcox_shannon$p.value,
+  location_shift_estimate = unname(wilcox_shannon$estimate),
+  conf_low_95 = wilcox_shannon$conf.int[1],
+  conf_high_95 = wilcox_shannon$conf.int[2],
+  cliffs_delta_CC_vs_VG = cliffs_delta_cc_vs_vg
+)
+
+readr::write_tsv(
+  resumen_shannon_desierto,
+  file.path(ruta_estadisticos, "02A_shannon_summary_by_desert_sample_level.tsv")
+)
+
+readr::write_tsv(
+  alpha_shannon_statistics,
+  file.path(ruta_estadisticos, "02A_shannon_wilcoxon_statistics_sample_level.tsv")
+)
+
+resumen_shannon_desierto
+alpha_shannon_statistics
+```
+```{r}
+## Sección 2A. Figura Shannon para publicación ----------------------------
+
+annotation_shannon <- alpha_shannon_statistics %>%
+  dplyr::mutate(
+    label = paste0(
+      "Wilcoxon rank-sum test",
+      "\n",
+      "p = ", format_p(p_value),
+      "\n",
+      "\u0394 median = ",
+      formatC(
+        median_difference_CC_minus_VG,
+        format = "f",
+        digits = 3
+      ),
+      "\n",
+      "95% CI = [",
+      formatC(conf_low_95, format = "f", digits = 3),
+      ", ",
+      formatC(conf_high_95, format = "f", digits = 3),
+      "]",
+      "\n",
+      "Cliff's \u03b4 = ",
+      formatC(
+        cliffs_delta_CC_vs_VG,
+        format = "f",
+        digits = 2
+      )
+    )
+  )
+
+y_shannon_annotation <- max(alpha_muestras$Shannon, na.rm = TRUE) -
+  0.02 * diff(range(alpha_muestras$Shannon, na.rm = TRUE))
+
+fig_shannon_alpha_publication <- ggplot(
+  alpha_muestras,
+  aes(
+    x = Desert,
+    y = Shannon,
+    fill = Desert
+  )
+) +
+  geom_boxplot(
+    width = 0.55,
+    outlier.shape = NA,
+    linewidth = 0.45,
+    alpha = 0.75
+  ) +
+  geom_jitter(
+    aes(color = Desert),
+    width = 0.08,
+    size = 2.6,
+    alpha = 0.95,
+    show.legend = FALSE
+  ) +
+  annotate(
+    "label",
+    x = 1.72,
+    y = y_shannon_annotation,
+    label = annotation_shannon$label,
+    hjust = 0,
+    vjust = 1,
+    size = 3.8,
+    label.size = 0.25,
+    lineheight = 0.95
+  ) +
+  scale_fill_manual(values = colores_desierto) +
+  scale_color_manual(values = colores_desierto) +
+  labs(
+    x = "Desert",
+    y = "Shannon diversity index",
+    fill = "Desert",
+    title = "Alpha diversity",
+    subtitle = "Species-level GTDB-Bracken profiles; n = 9 metagenomes per desert",
+    caption = "Statistics: Wilcoxon rank-sum test. Median difference and Cliff's delta are reported as Cuatro Ciénegas minus Valle de Guadalupe. The 95% confidence interval corresponds to the Wilcoxon location shift estimate."
+  ) +
+  publication_theme(base_size = 13) +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(size = 18, face = "bold"),
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12)
+  )
+
+fig_shannon_alpha_publication
+
+save_publication_figure(
+  fig_shannon_alpha_publication,
+  filename = "02A_shannon_alpha_diversity_sample_level_publication",
+  width = 7.5,
+  height = 5.8
+)
+```
+```{r}
+## Sección 2B.0 corregida. Buscar matriz correcta de 18 muestras -----------
+
+library(dplyr)
+library(tibble)
+
+tables_dir <- "/Users/ale/Desktop/kraken_gtdb/kraken_analysis_gtdb/Analisis_FQ_diversidad_gtdb/resultados/tablas"
+
+# Muestras esperadas desde alpha_muestras
+sample_ids_pca <- alpha_muestras$Muestra
+
+cat("\nMuestras esperadas para PCA:\n")
+print(sample_ids_pca)
+
+cat("\nNúmero de muestras por desierto:\n")
+print(table(alpha_muestras$Desert))
+
+# Buscar archivos candidatos de especies
+candidate_files <- list.files(
+  tables_dir,
+  pattern = "matriz_especies.*\\.csv$",
+  full.names = TRUE
+)
+
+cat("\nArchivos candidatos encontrados:\n")
+print(basename(candidate_files))
+
+# Revisar dimensiones y coincidencia con nombres de muestra
+candidate_summary <- lapply(candidate_files, function(file) {
+  
+  x <- read.csv(
+    file,
+    check.names = FALSE,
+    stringsAsFactors = FALSE,
+    nrows = 5
+  )
+  
+  x_full_names <- read.csv(
+    file,
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+  
+  first_col <- colnames(x_full_names)[1]
+  
+  row_ids <- NULL
+  
+  if (!is.numeric(x_full_names[[first_col]])) {
+    row_ids <- x_full_names[[first_col]]
+  }
+  
+  col_ids <- colnames(x_full_names)
+  
+  data.frame(
+    archivo = basename(file),
+    filas = nrow(x_full_names),
+    columnas = ncol(x_full_names),
+    primera_columna = first_col,
+    muestras_en_primera_columna = sum(sample_ids_pca %in% row_ids),
+    muestras_en_columnas = sum(sample_ids_pca %in% col_ids),
+    stringsAsFactors = FALSE
+  )
+})
+
+candidate_summary <- dplyr::bind_rows(candidate_summary)
+
+cat("\nResumen de archivos candidatos:\n")
+print(candidate_summary)
+
+# Elegir automáticamente archivo con las 18 muestras
+candidate_18 <- candidate_summary %>%
+  dplyr::filter(
+    muestras_en_primera_columna == 18 |
+      muestras_en_columnas == 18
+  )
+
+if (nrow(candidate_18) == 0) {
+  stop(
+    "Ningún archivo candidato contiene las 18 muestras. ",
+    "Revisa el resumen anterior y pega la salida."
+  )
+}
+
+cat("\nArchivo(s) que contienen las 18 muestras:\n")
+print(candidate_18)
+```
+
+
+```{r section-2-environmental-qc}
+## Sección 2. Control de calidad de variables fisicoquímicas --------------
+
+env_matrix_raw <- as.data.frame(env_final)
+
+diagnostico_variables_fq <- tibble::tibble(
+  variable = names(env_matrix_raw),
+  n = nrow(env_matrix_raw),
+  n_na = colSums(is.na(env_matrix_raw)),
+  n_non_na = colSums(!is.na(env_matrix_raw)),
+  variance = purrr::map_dbl(
+    env_matrix_raw,
+    ~ stats::var(.x, na.rm = TRUE)
+  )
+) %>%
+  dplyr::mutate(
+    all_na = n_na == n,
+    any_na = n_na > 0,
+    zero_variance = is.na(variance) | variance == 0,
+    retained_for_multivariate_analysis = !all_na & !any_na & !zero_variance,
+    exclusion_reason = dplyr::case_when(
+      all_na ~ "Excluded: all values are NA",
+      any_na ~ "Excluded: contains missing values",
+      zero_variance ~ "Excluded: zero variance",
+      TRUE ~ "Retained"
+    )
+  )
+
+variables_fq_retenidas <- diagnostico_variables_fq %>%
+  dplyr::filter(retained_for_multivariate_analysis) %>%
+  dplyr::pull(variable)
+
+variables_fq_excluidas <- diagnostico_variables_fq %>%
+  dplyr::filter(!retained_for_multivariate_analysis)
+
+if (length(variables_fq_retenidas) < 2) {
+  stop(
+    paste0(
+      "Menos de dos variables fisicoquímicas quedaron disponibles para análisis multivariado.\n",
+      "Revisa 02_diagnostico_variables_fisicoquimicas.tsv."
+    )
+  )
+}
+
+env_qc <- env_matrix_raw %>%
+  dplyr::select(dplyr::all_of(variables_fq_retenidas))
+
+if (any(is.na(env_qc))) {
+  stop("env_qc contiene NA después del control de calidad. Esto no debería ocurrir.")
+}
+
+readr::write_tsv(
+  diagnostico_variables_fq,
+  file.path(ruta_qc, "02_diagnostico_variables_fisicoquimicas.tsv")
+)
+
+readr::write_csv(
+  tibble::rownames_to_column(env_qc, "Unidad"),
+  file.path(ruta_tablas, "02_matriz_fq_qc_sin_NA_sin_varianza_cero.csv")
+)
+
+saveRDS(
+  env_qc,
+  file.path(ruta_tablas, "02_env_qc_sin_NA_sin_varianza_cero.rds")
+)
+
+diagnostico_variables_fq
+env_qc
+```
+
+```{r section-2-hellinger-transformation}
+## Sección 2. Transformación Hellinger ------------------------------------
+
+micro_hellinger <- vegan::decostand(
+  micro_matrix_qc,
+  method = "hellinger"
+)
+
+if (any(is.na(micro_hellinger))) {
+  stop("La matriz Hellinger contiene NA.")
+}
+
+if (!identical(rownames(micro_hellinger), rownames(metadata_final))) {
+  stop("El orden de filas no coincide entre micro_hellinger y metadata_final.")
+}
+
+readr::write_csv(
+  tibble::rownames_to_column(
+    as.data.frame(micro_hellinger),
+    "Unidad"
+  ),
+  file.path(ruta_tablas, "02_micro_hellinger_por_unidad.csv")
+)
+
+saveRDS(
+  micro_hellinger,
+  file.path(ruta_tablas, "02_micro_hellinger_por_unidad.rds")
+)
+
+diagnostico_hellinger <- tibble::tibble(
+  elemento = c(
+    "Método de transformación",
+    "Unidades ambientales",
+    "Taxones retenidos",
+    "Valor mínimo Hellinger",
+    "Valor máximo Hellinger",
+    "NA en matriz transformada"
+  ),
+  valor = c(
+    "Hellinger transformation using vegan::decostand(method = 'hellinger')",
+    as.character(nrow(micro_hellinger)),
+    as.character(ncol(micro_hellinger)),
+    as.character(min(micro_hellinger)),
+    as.character(max(micro_hellinger)),
+    as.character(sum(is.na(micro_hellinger)))
+  )
+)
+
+readr::write_tsv(
+  diagnostico_hellinger,
+  file.path(ruta_qc, "02_diagnostico_transformacion_hellinger.tsv")
+)
+
+diagnostico_hellinger
+```
+
+```{r section-2-alpha-diversity}
+## Sección 2. Diversidad alfa ---------------------------------------------
+
+alpha_diversity <- tibble::tibble(
+  Unidad = rownames(micro_matrix_qc),
+  Observed_taxa = rowSums(micro_matrix_qc > 0),
+  Shannon = vegan::diversity(micro_matrix_qc, index = "shannon"),
+  Simpson = vegan::diversity(micro_matrix_qc, index = "simpson"),
+  Total_reads = rowSums(micro_matrix_qc)
+) %>%
+  dplyr::mutate(
+    Pielou_evenness = Shannon / log(Observed_taxa)
+  ) %>%
+  dplyr::left_join(
+    tibble::rownames_to_column(metadata_final, "Unidad"),
+    by = "Unidad"
+  ) %>%
+  dplyr::mutate(
+    Desert = dplyr::recode(
+      Desierto,
+      "CC" = "Cuatro Ciénegas",
+      "VG" = "Valle de Guadalupe"
+    ),
+    Desert = factor(
+      Desert,
+      levels = c("Cuatro Ciénegas", "Valle de Guadalupe")
+    )
+  )
+
+readr::write_csv(
+  alpha_diversity,
+  file.path(ruta_tablas, "02_alpha_diversity_by_environmental_unit.csv")
+)
+
+alpha_diversity
+```
+
+```{r section-2-alpha-statistics}
+## Sección 2. Estadísticos de diversidad alfa -----------------------------
+
+calcular_cliffs_delta <- function(x, group) {
+  
+  datos <- tibble::tibble(
+    x = x,
+    group = group
+  ) %>%
+    dplyr::filter(!is.na(x), !is.na(group))
+  
+  grupos <- unique(datos$group)
+  
+  if (length(grupos) != 2) {
+    return(NA_real_)
+  }
+  
+  x1 <- datos$x[datos$group == grupos[1]]
+  x2 <- datos$x[datos$group == grupos[2]]
+  
+  comparaciones <- outer(x2, x1, "-")
+  
+  delta <- (
+    sum(comparaciones > 0) -
+      sum(comparaciones < 0)
+  ) / length(comparaciones)
+  
+  return(delta)
+}
+
+variables_alpha <- c(
+  "Observed_taxa",
+  "Shannon",
+  "Simpson",
+  "Pielou_evenness",
+  "Total_reads"
+)
+
+alpha_statistics <- purrr::map_dfr(
+  variables_alpha,
+  function(variable_actual) {
+    
+    datos_variable <- alpha_diversity %>%
+      dplyr::select(
+        Desert,
+        valor = dplyr::all_of(variable_actual)
+      )
+    
+    prueba_wilcox <- stats::wilcox.test(
+      valor ~ Desert,
+      data = datos_variable,
+      exact = FALSE
+    )
+    
+    resumen_grupo <- datos_variable %>%
+      dplyr::group_by(Desert) %>%
+      dplyr::summarise(
+        n = dplyr::n(),
+        mean = mean(valor, na.rm = TRUE),
+        median = median(valor, na.rm = TRUE),
+        sd = sd(valor, na.rm = TRUE),
+        .groups = "drop"
+      )
+    
+    media_cc <- resumen_grupo$mean[
+      resumen_grupo$Desert == "Cuatro Ciénegas"
+    ]
+    
+    media_vg <- resumen_grupo$mean[
+      resumen_grupo$Desert == "Valle de Guadalupe"
+    ]
+    
+    mediana_cc <- resumen_grupo$median[
+      resumen_grupo$Desert == "Cuatro Ciénegas"
+    ]
+    
+    mediana_vg <- resumen_grupo$median[
+      resumen_grupo$Desert == "Valle de Guadalupe"
+    ]
+    
+    tibble::tibble(
+      variable = variable_actual,
+      test = "Wilcoxon rank-sum test",
+      n_CC = resumen_grupo$n[
+        resumen_grupo$Desert == "Cuatro Ciénegas"
+      ],
+      n_VG = resumen_grupo$n[
+        resumen_grupo$Desert == "Valle de Guadalupe"
+      ],
+      mean_CC = media_cc,
+      mean_VG = media_vg,
+      median_CC = mediana_cc,
+      median_VG = mediana_vg,
+      difference_mean_VG_minus_CC = media_vg - media_cc,
+      difference_median_VG_minus_CC = mediana_vg - mediana_cc,
+      p_value = prueba_wilcox$p.value,
+      cliffs_delta_VG_vs_CC = calcular_cliffs_delta(
+        x = datos_variable$valor,
+        group = datos_variable$Desert
+      )
+    )
+  }
+) %>%
+  dplyr::mutate(
+    q_value_BH = p.adjust(p_value, method = "BH"),
+    p_label = paste0("Wilcoxon p = ", format_p(p_value)),
+    q_label = paste0("BH q = ", format_p(q_value_BH)),
+    delta_label = paste0(
+      "Cliff's delta = ",
+      formatC(cliffs_delta_VG_vs_CC, format = "f", digits = 2)
+    )
+  )
+
+readr::write_tsv(
+  alpha_statistics,
+  file.path(ruta_estadisticos, "02_alpha_diversity_statistics.tsv")
+)
+
+alpha_statistics
+```
+
+```{r section-2-alpha-figure}
+## Sección 2. Figura de diversidad alfa para publicación ------------------
+
+alpha_long <- alpha_diversity %>%
+  dplyr::select(
+    Unidad,
+    Desert,
+    Observed_taxa,
+    Shannon,
+    Simpson,
+    Pielou_evenness
+  ) %>%
+  tidyr::pivot_longer(
+    cols = c(
+      Observed_taxa,
+      Shannon,
+      Simpson,
+      Pielou_evenness
+    ),
+    names_to = "Metric",
+    values_to = "Value"
+  ) %>%
+  dplyr::mutate(
+    Metric = dplyr::recode(
+      Metric,
+      "Observed_taxa" = "Observed taxa",
+      "Shannon" = "Shannon diversity",
+      "Simpson" = "Simpson diversity",
+      "Pielou_evenness" = "Pielou evenness"
+    ),
+    Metric = factor(
+      Metric,
+      levels = c(
+        "Observed taxa",
+        "Shannon diversity",
+        "Simpson diversity",
+        "Pielou evenness"
+      )
+    )
+  )
+
+alpha_statistics_plot <- alpha_statistics %>%
+  dplyr::filter(
+    variable %in% c(
+      "Observed_taxa",
+      "Shannon",
+      "Simpson",
+      "Pielou_evenness"
+    )
+  ) %>%
+  dplyr::mutate(
+    Metric = dplyr::recode(
+      variable,
+      "Observed_taxa" = "Observed taxa",
+      "Shannon" = "Shannon diversity",
+      "Simpson" = "Simpson diversity",
+      "Pielou_evenness" = "Pielou evenness"
+    ),
+    label = paste0(
+      "Wilcoxon p = ", format_p(p_value),
+      "\nBH q = ", format_p(q_value_BH),
+      "\nCliff's \u03b4 = ",
+      formatC(cliffs_delta_VG_vs_CC, format = "f", digits = 2)
+    )
+  )
+
+posiciones_alpha <- alpha_long %>%
+  dplyr::group_by(Metric) %>%
+  dplyr::summarise(
+    y = max(Value, na.rm = TRUE) +
+      0.08 * diff(range(Value, na.rm = TRUE)),
+    .groups = "drop"
+  )
+
+alpha_statistics_plot <- alpha_statistics_plot %>%
+  dplyr::left_join(
+    posiciones_alpha,
+    by = "Metric"
+  )
+
+fig_alpha_diversity <- ggplot(
+  alpha_long,
+  aes(
+    x = Desert,
+    y = Value,
+    fill = Desert
+  )
+) +
+  geom_boxplot(
+    width = 0.55,
+    outlier.shape = NA,
+    linewidth = 0.4,
+    alpha = 0.75
+  ) +
+  geom_jitter(
+    aes(color = Desert),
+    width = 0.08,
+    size = 2.4,
+    alpha = 0.95,
+    show.legend = FALSE
+  ) +
+  geom_text(
+    data = alpha_statistics_plot,
+    aes(
+      x = 1.5,
+      y = y,
+      label = label
+    ),
+    inherit.aes = FALSE,
+    size = 3.1,
+    lineheight = 0.9
+  ) +
+  facet_wrap(
+    ~ Metric,
+    scales = "free_y",
+    ncol = 2
+  ) +
+  scale_fill_manual(values = colores_desierto) +
+  scale_color_manual(values = colores_desierto) +
+  labs(
+    x = NULL,
+    y = "Alpha diversity value",
+    fill = "Desert",
+    title = "Alpha diversity of microbial communities",
+    subtitle = "Species-level GTDB-Bracken profiles aggregated by physicochemical sampling unit",
+    caption = "Statistics: Wilcoxon rank-sum test; p-values adjusted using Benjamini-Hochberg FDR. Effect size: Cliff's delta, calculated as Valle de Guadalupe versus Cuatro Ciénegas."
+  ) +
+  publication_theme(base_size = 11) +
+  theme(
+    axis.text.x = element_text(angle = 25, hjust = 1),
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold"),
+    legend.position = "bottom"
+  )
+
+fig_alpha_diversity
+
+save_publication_figure(
+  fig_alpha_diversity,
+  filename = "02_alpha_diversity_publication",
+  width = 8,
+  height = 6
+)
+```
+
+```{r section-2-read-depth-figure}
+## Sección 2. Figura de profundidad de lectura ----------------------------
+
+profundidad_stats <- alpha_statistics %>%
+  dplyr::filter(variable == "Total_reads") %>%
+  dplyr::mutate(
+    label = paste0(
+      "Wilcoxon p = ", format_p(p_value),
+      "; BH q = ", format_p(q_value_BH),
+      "; Cliff's \u03b4 = ",
+      formatC(cliffs_delta_VG_vs_CC, format = "f", digits = 2)
+    )
+  )
+
+y_read_depth <- max(profundidad_lectura$Total_reads, na.rm = TRUE) * 1.08
+
+fig_read_depth <- ggplot(
+  profundidad_lectura,
+  aes(
+    x = Desert,
+    y = Total_reads,
+    fill = Desert
+  )
+) +
+  geom_boxplot(
+    width = 0.55,
+    outlier.shape = NA,
+    linewidth = 0.4,
+    alpha = 0.75
+  ) +
+  geom_jitter(
+    aes(color = Desert),
+    width = 0.08,
+    size = 2.6,
+    alpha = 0.95,
+    show.legend = FALSE
+  ) +
+  geom_text(
+    data = profundidad_stats,
+    aes(
+      x = 1.5,
+      y = y_read_depth,
+      label = label
+    ),
+    inherit.aes = FALSE,
+    size = 3.3
+  ) +
+  scale_y_continuous(
+    labels = scales::comma
+  ) +
+  scale_fill_manual(values = colores_desierto) +
+  scale_color_manual(values = colores_desierto) +
+  labs(
+    x = NULL,
+    y = "Total reads per environmental unit",
+    fill = "Desert",
+    title = "Sequencing depth after aggregation by environmental unit",
+    subtitle = "Species-level GTDB-Bracken read counts",
+    caption = "Statistics: Wilcoxon rank-sum test; p-values adjusted using Benjamini-Hochberg FDR. Effect size: Cliff's delta, calculated as Valle de Guadalupe versus Cuatro Ciénegas."
+  ) +
+  publication_theme(base_size = 11) +
+  theme(
+    axis.text.x = element_text(angle = 25, hjust = 1),
+    legend.position = "bottom"
+  )
+
+fig_read_depth
+
+save_publication_figure(
+  fig_read_depth,
+  filename = "02_read_depth_publication",
+  width = 7,
+  height = 5
+)
+```
+
+```{r section-2-update-log}
+## Sección 2. Registrar control de calidad en bitácora --------------------
+
+write(
+  c(
+    "",
+    "## Parte 2. Control de calidad, transformación y diversidad alfa",
+    "",
+    paste("Fecha:", Sys.Date()),
+    "",
+    "### Objetivo",
+    "",
+    "Realizar control de calidad reproducible de la matriz microbiana y de la matriz fisicoquímica, aplicar transformación Hellinger y calcular métricas de diversidad alfa.",
+    "",
+    "### Control de calidad microbiano",
+    "",
+    paste("- Unidades ambientales evaluadas:", nrow(micro_matrix_qc)),
+    paste("- Taxones antes del filtro:", ncol(micro_matrix)),
+    paste("- Taxones removidos por suma total cero:", length(taxa_cero_total)),
+    paste("- Taxones retenidos:", ncol(micro_matrix_qc)),
+    "",
+    "### Control de calidad fisicoquímico",
+    "",
+    paste("- Variables fisicoquímicas iniciales:", ncol(env_matrix_raw)),
+    paste("- Variables retenidas para análisis multivariado:", length(variables_fq_retenidas)),
+    paste("- Variables excluidas:", nrow(variables_fq_excluidas)),
+    "",
+    "Variables retenidas:",
+    paste("-", paste(variables_fq_retenidas, collapse = ", ")),
+    "",
+    "### Decisión metodológica",
+    "",
+    "Para mantener reproducibilidad estricta y evitar imputación con n pequeño, se excluyeron de los análisis multivariados las variables fisicoquímicas con valores faltantes, con todos sus valores ausentes o con varianza cero.",
+    "",
+    "La matriz microbiana fue transformada con Hellinger mediante vegan::decostand(method = 'hellinger'), una transformación apropiada para datos de composición comunitaria antes de análisis basados en distancias euclidianas o gradientes multivariados.",
+    "",
+    "### Estadística de diversidad alfa",
+    "",
+    "- Se calcularon riqueza observada, diversidad de Shannon, diversidad de Simpson y equidad de Pielou.",
+    "- Las diferencias entre desiertos se evaluaron con prueba de Wilcoxon.",
+    "- Los valores p fueron ajustados con Benjamini-Hochberg.",
+    "- El tamaño del efecto se reportó como delta de Cliff, calculado como Valle de Guadalupe contra Cuatro Ciénegas.",
+    "",
+    "### Archivos generados",
+    "",
+    "- 02_profundidad_lectura_por_unidad.tsv",
+    "- 02_diagnostico_microbioma_qc.tsv",
+    "- 02_diagnostico_variables_fisicoquimicas.tsv",
+    "- 02_matriz_fq_qc_sin_NA_sin_varianza_cero.csv",
+    "- 02_env_qc_sin_NA_sin_varianza_cero.rds",
+    "- 02_micro_hellinger_por_unidad.csv",
+    "- 02_micro_hellinger_por_unidad.rds",
+    "- 02_alpha_diversity_by_environmental_unit.csv",
+    "- 02_alpha_diversity_statistics.tsv",
+    "- 02_alpha_diversity_publication.pdf/tiff/jpg",
+    "- 02_read_depth_publication.pdf/tiff/jpg"
+  ),
+  archivo_bitacora,
+  append = TRUE
+)
+```
+
+## Section 3. Physicochemical PCA
+
+Objective: evaluate major soil physicochemical gradients using principal component analysis and generate a publication-quality figure with statistical annotation.
+
+```{r section-3-load-pca-inputs}
+## Sección 3. Cargar objetos depurados ------------------------------------
+
+env_qc <- readRDS(
+  file.path(ruta_tablas, "02_env_qc_sin_NA_sin_varianza_cero.rds")
+)
+
+metadata_final <- readRDS(
+  file.path(ruta_tablas, "01_metadata_final_por_unidad.rds")
+)
+
+if (!identical(rownames(env_qc), rownames(metadata_final))) {
+  stop("El orden de filas no coincide entre env_qc y metadata_final.")
+}
+
+metadata_pca <- tibble::rownames_to_column(
+  metadata_final,
+  "Unidad"
+) %>%
+  dplyr::mutate(
+    Desert = dplyr::recode(
+      Desierto,
+      "CC" = "Cuatro Ciénegas",
+      "VG" = "Valle de Guadalupe"
+    ),
+    Desert = factor(
+      Desert,
+      levels = c("Cuatro Ciénegas", "Valle de Guadalupe")
+    )
+  )
+
+dim(env_qc)
+metadata_pca
+```
+
+```{r section-3-variable-labels}
+## Sección 3. Etiquetas en inglés para variables fisicoquímicas -----------
+
+etiquetas_fq_ingles <- c(
+  "p_h" = "pH",
+  "ce" = "Electrical conductivity",
+  "m_o" = "Organic matter",
+  "n" = "Total nitrogen",
+  "p" = "Available phosphorus",
+  "k" = "Potassium",
+  "ca" = "Calcium",
+  "mg" = "Magnesium",
+  "na" = "Sodium",
+  "cic" = "Cation exchange capacity",
+  "fe" = "Iron",
+  "n_no3" = "Nitrate-N",
+  "n_nh4" = "Ammonium-N",
+  "pt" = "Total phosphorus",
+  "ct" = "Total carbon",
+  "arena" = "Sand",
+  "limo" = "Silt",
+  "arcilla" = "Clay"
+)
+
+variables_sin_etiqueta <- setdiff(
+  colnames(env_qc),
+  names(etiquetas_fq_ingles)
+)
+
+if (length(variables_sin_etiqueta) > 0) {
+  warning(
+    paste0(
+      "Las siguientes variables no tienen etiqueta en inglés definida: ",
+      paste(variables_sin_etiqueta, collapse = ", ")
+    )
+  )
+}
+
+etiquetas_variables_pca <- dplyr::recode(
+  colnames(env_qc),
+  !!!etiquetas_fq_ingles,
+  .default = colnames(env_qc)
+)
+```
+
+```{r section-3-run-pca}
+## Sección 3. Ejecutar PCA fisicoquímica ----------------------------------
+
+env_scaled <- scale(env_qc)
+
+pca_fq <- stats::prcomp(
+  env_scaled,
+  center = FALSE,
+  scale. = FALSE
+)
+
+varianza_pca <- tibble::tibble(
+  PC = paste0("PC", seq_along(pca_fq$sdev)),
+  eigenvalue = pca_fq$sdev^2,
+  variance_explained = (pca_fq$sdev^2) / sum(pca_fq$sdev^2),
+  variance_explained_percent = variance_explained * 100,
+  cumulative_variance_percent = cumsum(variance_explained_percent)
+)
+
+scores_pca <- as.data.frame(pca_fq$x) %>%
+  tibble::rownames_to_column("Unidad") %>%
+  dplyr::left_join(
+    metadata_pca,
+    by = "Unidad"
+  )
+
+loadings_pca <- as.data.frame(pca_fq$rotation) %>%
+  tibble::rownames_to_column("variable") %>%
+  dplyr::mutate(
+    variable_label = dplyr::recode(
+      variable,
+      !!!etiquetas_fq_ingles,
+      .default = variable
+    ),
+    contribution_PC1 = (PC1^2 / sum(PC1^2)) * 100,
+    contribution_PC2 = (PC2^2 / sum(PC2^2)) * 100
+  )
+
+readr::write_tsv(
+  varianza_pca,
+  file.path(ruta_estadisticos, "03_pca_physicochemical_variance_explained.tsv")
+)
+
+readr::write_tsv(
+  scores_pca,
+  file.path(ruta_tablas, "03_pca_physicochemical_scores.tsv")
+)
+
+readr::write_tsv(
+  loadings_pca,
+  file.path(ruta_estadisticos, "03_pca_physicochemical_loadings_contributions.tsv")
+)
+
+varianza_pca
+scores_pca
+loadings_pca
+```
+
+```{r section-3-permanova-environment}
+## Section 3. Physicochemical PCA
+
+Objective: evaluate major soil physicochemical gradients using principal component analysis and generate a publication-quality figure with statistical annotation.
+
+```{r section-3-load-pca-inputs}
+## Sección 3. Cargar objetos depurados ------------------------------------
+
+env_qc <- readRDS(
+  file.path(ruta_tablas, "02_env_qc_sin_NA_sin_varianza_cero.rds")
+)
+
+metadata_final <- readRDS(
+  file.path(ruta_tablas, "01_metadata_final_por_unidad.rds")
+)
+
+if (!identical(rownames(env_qc), rownames(metadata_final))) {
+  stop("El orden de filas no coincide entre env_qc y metadata_final.")
+}
+
+metadata_pca <- tibble::rownames_to_column(
+  metadata_final,
+  "Unidad"
+) %>%
+  dplyr::mutate(
+    Desert = dplyr::recode(
+      Desierto,
+      "CC" = "Cuatro Ciénegas",
+      "VG" = "Valle de Guadalupe"
+    ),
+    Desert = factor(
+      Desert,
+      levels = c("Cuatro Ciénegas", "Valle de Guadalupe")
+    )
+  )
+
+dim(env_qc)
+metadata_pca
+```
+
+```{r section-3-variable-labels}
+## Sección 3. Etiquetas en inglés para variables fisicoquímicas -----------
+
+etiquetas_fq_ingles <- c(
+  "p_h" = "pH",
+  "ce" = "Electrical conductivity",
+  "m_o" = "Organic matter",
+  "n" = "Total nitrogen",
+  "p" = "Available phosphorus",
+  "k" = "Potassium",
+  "ca" = "Calcium",
+  "mg" = "Magnesium",
+  "na" = "Sodium",
+  "cic" = "Cation exchange capacity",
+  "fe" = "Iron",
+  "n_no3" = "Nitrate-N",
+  "n_nh4" = "Ammonium-N",
+  "pt" = "Total phosphorus",
+  "ct" = "Total carbon",
+  "arena" = "Sand",
+  "limo" = "Silt",
+  "arcilla" = "Clay"
+)
+
+variables_sin_etiqueta <- setdiff(
+  colnames(env_qc),
+  names(etiquetas_fq_ingles)
+)
+
+if (length(variables_sin_etiqueta) > 0) {
+  warning(
+    paste0(
+      "Las siguientes variables no tienen etiqueta en inglés definida: ",
+      paste(variables_sin_etiqueta, collapse = ", ")
+    )
+  )
+}
+
+etiquetas_variables_pca <- dplyr::recode(
+  colnames(env_qc),
+  !!!etiquetas_fq_ingles,
+  .default = colnames(env_qc)
+)
+```
+
+```{r section-3-run-pca}
+## Sección 3. Ejecutar PCA fisicoquímica ----------------------------------
+
+env_scaled <- scale(env_qc)
+
+pca_fq <- stats::prcomp(
+  env_scaled,
+  center = FALSE,
+  scale. = FALSE
+)
+
+varianza_pca <- tibble::tibble(
+  PC = paste0("PC", seq_along(pca_fq$sdev)),
+  eigenvalue = pca_fq$sdev^2,
+  variance_explained = (pca_fq$sdev^2) / sum(pca_fq$sdev^2),
+  variance_explained_percent = variance_explained * 100,
+  cumulative_variance_percent = cumsum(variance_explained_percent)
+)
+
+scores_pca <- as.data.frame(pca_fq$x) %>%
+  tibble::rownames_to_column("Unidad") %>%
+  dplyr::left_join(
+    metadata_pca,
+    by = "Unidad"
+  )
+
+loadings_pca <- as.data.frame(pca_fq$rotation) %>%
+  tibble::rownames_to_column("variable") %>%
+  dplyr::mutate(
+    variable_label = dplyr::recode(
+      variable,
+      !!!etiquetas_fq_ingles,
+      .default = variable
+    ),
+    contribution_PC1 = (PC1^2 / sum(PC1^2)) * 100,
+    contribution_PC2 = (PC2^2 / sum(PC2^2)) * 100
+  )
+
+readr::write_tsv(
+  varianza_pca,
+  file.path(ruta_estadisticos, "03_pca_physicochemical_variance_explained.tsv")
+)
+
+readr::write_tsv(
+  scores_pca,
+  file.path(ruta_tablas, "03_pca_physicochemical_scores.tsv")
+)
+
+readr::write_tsv(
+  loadings_pca,
+  file.path(ruta_estadisticos, "03_pca_physicochemical_loadings_contributions.tsv")
+)
+
+varianza_pca
+scores_pca
+loadings_pca
+```
+
+```{r section-3-permanova-environment}
+## Sección 3. PERMANOVA sobre variables fisicoquímicas --------------------
+
+set.seed(12345)
+
+dist_env_euclidean <- dist(
+  env_scaled,
+  method = "euclidean"
+)
+
+permanova_env <- vegan::adonis2(
+  dist_env_euclidean ~ Desert,
+  data = metadata_pca,
+  permutations = 999,
+  by = "terms"
+)
+
+## Convertir resultado a tabla robusta ------------------------------------
+
+permanova_env_table_raw <- as.data.frame(
+  permanova_env,
+  check.names = FALSE
+)
+
+permanova_env_table <- permanova_env_table_raw %>%
+  tibble::rownames_to_column("term") %>%
+  tibble::as_tibble()
+
+readr::write_tsv(
+  permanova_env_table,
+  file.path(ruta_estadisticos, "03_permanova_physicochemical_by_desert.tsv")
+)
+
+## Mostrar tabla completa para control ------------------------------------
+
+print(permanova_env_table)
+print(names(permanova_env_table))
+
+## Identificar la fila del modelo -----------------------------------------
+## Se excluyen Residual y Total para evitar depender del nombre exacto
+## que regrese adonis2().
+
+fila_modelo_env <- permanova_env_table %>%
+  dplyr::filter(
+    !term %in% c("Residual", "Total")
+  )
+
+if (nrow(fila_modelo_env) != 1) {
+  stop(
+    paste0(
+      "No se pudo identificar una única fila del modelo en PERMANOVA.\n",
+      "Filas disponibles: ",
+      paste(permanova_env_table$term, collapse = ", ")
+    )
+  )
+}
+
+## Extraer columnas requeridas --------------------------------------------
+
+if (!"R2" %in% names(fila_modelo_env)) {
+  stop(
+    paste0(
+      "No se encontró la columna R2. Columnas disponibles: ",
+      paste(names(fila_modelo_env), collapse = ", ")
+    )
+  )
+}
+
+if (!"F" %in% names(fila_modelo_env)) {
+  stop(
+    paste0(
+      "No se encontró la columna F. Columnas disponibles: ",
+      paste(names(fila_modelo_env), collapse = ", ")
+    )
+  )
+}
+
+if (!"Pr(>F)" %in% names(fila_modelo_env)) {
+  stop(
+    paste0(
+      "No se encontró la columna Pr(>F). Columnas disponibles: ",
+      paste(names(fila_modelo_env), collapse = ", ")
+    )
+  )
+}
+
+r2_env <- as.numeric(fila_modelo_env[["R2"]])
+f_env <- as.numeric(fila_modelo_env[["F"]])
+p_env <- as.numeric(fila_modelo_env[["Pr(>F)"]])
+
+if (length(r2_env) != 1 | length(f_env) != 1 | length(p_env) != 1) {
+  stop("R2, F o p no tienen longitud 1. Revisa la tabla PERMANOVA.")
+}
+
+if (any(is.na(c(r2_env, f_env, p_env)))) {
+  stop("R2, F o p quedaron como NA. Revisa permanova_env_table.")
+}
+
+permanova_env_label <- paste0(
+  "PERMANOVA: R² = ",
+  formatC(r2_env, format = "f", digits = 3),
+  ", F = ",
+  formatC(f_env, format = "f", digits = 2),
+  ", p = ",
+  format_p(p_env)
+)
+
+permanova_env_summary <- tibble::tibble(
+  analysis = "Physicochemical PERMANOVA",
+  distance = "Euclidean distance on scaled physicochemical variables",
+  formula = "dist_env_euclidean ~ Desert",
+  permutations = 999,
+  term = fila_modelo_env$term,
+  R2 = r2_env,
+  F = f_env,
+  p_value = p_env,
+  label = permanova_env_label
+)
+
+readr::write_tsv(
+  permanova_env_summary,
+  file.path(ruta_estadisticos, "03_permanova_physicochemical_summary.tsv")
+)
+
+permanova_env_table
+permanova_env_summary
+permanova_env_label
+```
+
+```{r section-3-pca-biplot-publication}
+## Sección 3. Figura PCA fisicoquímica para publicación -------------------
+
+pc1_percent <- varianza_pca$variance_explained_percent[
+  varianza_pca$PC == "PC1"
+]
+
+pc2_percent <- varianza_pca$variance_explained_percent[
+  varianza_pca$PC == "PC2"
+]
+
+## Escalar vectores para que sean visibles en el biplot -------------------
+
+rango_scores <- min(
+  diff(range(scores_pca$PC1)),
+  diff(range(scores_pca$PC2))
+)
+
+rango_loadings <- max(
+  sqrt(loadings_pca$PC1^2 + loadings_pca$PC2^2)
+)
+
+factor_vectores <- 0.38 * rango_scores / rango_loadings
+
+loadings_plot <- loadings_pca %>%
+  dplyr::mutate(
+    PC1_arrow = PC1 * factor_vectores,
+    PC2_arrow = PC2 * factor_vectores
+  )
+
+fig_pca_fq <- ggplot(
+  scores_pca,
+  aes(
+    x = PC1,
+    y = PC2,
+    color = Desert,
+    fill = Desert
+  )
+) +
+  geom_hline(
+    yintercept = 0,
+    linewidth = 0.3,
+    linetype = "dashed",
+    color = "grey55"
+  ) +
+  geom_vline(
+    xintercept = 0,
+    linewidth = 0.3,
+    linetype = "dashed",
+    color = "grey55"
+  ) +
+  stat_ellipse(
+    geom = "polygon",
+    alpha = 0.12,
+    linewidth = 0.35,
+    level = 0.68,
+    show.legend = FALSE
+  ) +
+  geom_point(
+    size = 3.4,
+    shape = 21,
+    color = "black",
+    stroke = 0.45
+  ) +
+  ggrepel::geom_text_repel(
+    aes(label = Unidad),
+    size = 3.3,
+    show.legend = FALSE,
+    max.overlaps = Inf
+  ) +
+  geom_segment(
+    data = loadings_plot,
+    aes(
+      x = 0,
+      y = 0,
+      xend = PC1_arrow,
+      yend = PC2_arrow
+    ),
+    inherit.aes = FALSE,
+    arrow = arrow(length = unit(0.18, "cm")),
+    linewidth = 0.45,
+    color = "grey20"
+  ) +
+  ggrepel::geom_text_repel(
+    data = loadings_plot,
+    aes(
+      x = PC1_arrow,
+      y = PC2_arrow,
+      label = variable_label
+    ),
+    inherit.aes = FALSE,
+    size = 3.1,
+    color = "grey10",
+    max.overlaps = Inf
+  ) +
+  annotate(
+    "label",
+    x = Inf,
+    y = -Inf,
+    label = permanova_env_label,
+    hjust = 1.05,
+    vjust = -0.6,
+    size = 3.4,
+    label.size = 0.25
+  ) +
+  scale_color_manual(values = colores_desierto) +
+  scale_fill_manual(values = colores_desierto) +
+  labs(
+    x = paste0(
+      "PC1 (",
+      formatC(pc1_percent, format = "f", digits = 1),
+      "%)"
+    ),
+    y = paste0(
+      "PC2 (",
+      formatC(pc2_percent, format = "f", digits = 1),
+      "%)"
+    ),
+    color = "Desert",
+    fill = "Desert",
+    title = "Physicochemical structure of soil samples",
+    subtitle = "Principal component analysis of scaled soil variables",
+    caption = "Points represent physicochemical sampling units. Arrows indicate variable loadings. Ellipses represent 68% normal confidence regions and are shown only as visual guides. Statistical test: PERMANOVA on Euclidean distances of scaled physicochemical variables."
+  ) +
+  publication_theme(base_size = 11) +
+  theme(
+    legend.position = "bottom",
+    plot.caption = element_text(hjust = 0)
+  )
+
+fig_pca_fq
+
+save_publication_figure(
+  fig_pca_fq,
+  filename = "03_physicochemical_PCA_publication",
+  width = 8,
+  height = 6
+)
+```
+
+```{r section-3-pca-contributions-figure}
+## Sección 3. Contribuciones de variables a PC1 y PC2 ---------------------
+
+contribuciones_pca_long <- loadings_pca %>%
+  dplyr::select(
+    variable_label,
+    contribution_PC1,
+    contribution_PC2
+  ) %>%
+  tidyr::pivot_longer(
+    cols = c(
+      contribution_PC1,
+      contribution_PC2
+    ),
+    names_to = "Axis",
+    values_to = "Contribution"
+  ) %>%
+  dplyr::mutate(
+    Axis = dplyr::recode(
+      Axis,
+      "contribution_PC1" = "PC1",
+      "contribution_PC2" = "PC2"
+    )
+  )
+
+top_contribuciones_pca <- contribuciones_pca_long %>%
+  dplyr::group_by(Axis) %>%
+  dplyr::slice_max(
+    order_by = Contribution,
+    n = 8,
+    with_ties = FALSE
+  ) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(
+    variable_label = forcats::fct_reorder(
+      variable_label,
+      Contribution
+    )
+  )
+
+fig_pca_contributions <- ggplot(
+  top_contribuciones_pca,
+  aes(
+    x = Contribution,
+    y = variable_label
+  )
+) +
+  geom_col(
+    width = 0.7,
+    fill = "grey60",
+    color = "black",
+    linewidth = 0.25
+  ) +
+  facet_wrap(
+    ~ Axis,
+    scales = "free_y"
+  ) +
+  labs(
+    x = "Contribution (%)",
+    y = NULL,
+    title = "Main physicochemical contributors to PCA axes",
+    subtitle = "Top variable contributions to PC1 and PC2",
+    caption = "Contributions were calculated from squared PCA loadings."
+  ) +
+  publication_theme(base_size = 11) +
+  theme(
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold"),
+    legend.position = "none"
+  )
+
+fig_pca_contributions
+
+save_publication_figure(
+  fig_pca_contributions,
+  filename = "03_physicochemical_PCA_variable_contributions",
+  width = 7,
+  height = 5.5
+)
+```
+
+```{r section-3-update-log}
+## Sección 3. Registrar PCA fisicoquímica en bitácora ---------------------
+
+write(
+  c(
+    "",
+    "## Parte 3. PCA fisicoquímica",
+    "",
+    paste("Fecha:", Sys.Date()),
+    "",
+    "### Objetivo",
+    "",
+    "Evaluar los principales gradientes fisicoquímicos del suelo mediante análisis de componentes principales.",
+    "",
+    "### Datos usados",
+    "",
+    "- Matriz fisicoquímica depurada: 02_env_qc_sin_NA_sin_varianza_cero.rds",
+    paste("- Número de unidades ambientales:", nrow(env_qc)),
+    paste("- Número de variables fisicoquímicas retenidas:", ncol(env_qc)),
+    "",
+    "### Decisiones metodológicas",
+    "",
+    "- Las variables fisicoquímicas fueron centradas y escaladas antes del PCA.",
+    "- El PCA se ejecutó con stats::prcomp.",
+    "- Las variables con NA, todos sus valores ausentes o varianza cero ya habían sido excluidas en la Sección 2.",
+    "- Se calculó PERMANOVA sobre distancias euclidianas de las variables fisicoquímicas escaladas para evaluar separación por desierto.",
+    "",
+    "### Resultados principales",
+    "",
+    paste(
+      "- Varianza explicada por PC1:",
+      paste0(formatC(pc1_percent, format = "f", digits = 2), "%")
+    ),
+    paste(
+      "- Varianza explicada por PC2:",
+      paste0(formatC(pc2_percent, format = "f", digits = 2), "%")
+    ),
+    paste("- Estadístico PERMANOVA:", permanova_env_label),
+    "",
+    "### Advertencia interpretativa",
+    "",
+    "La interpretación estadística debe ser cautelosa porque la matriz fisicoquímica contiene solo seis unidades ambientales, tres por desierto.",
+    "",
+    "### Archivos generados",
+    "",
+    "- 03_pca_physicochemical_variance_explained.tsv",
+    "- 03_pca_physicochemical_scores.tsv",
+    "- 03_pca_physicochemical_loadings_contributions.tsv",
+    "- 03_permanova_physicochemical_by_desert.tsv",
+    "- 03_physicochemical_PCA_publication.pdf/tiff/jpg",
+    "- 03_physicochemical_PCA_variable_contributions.pdf/tiff/jpg"
+  ),
+  archivo_bitacora,
+  append = TRUE
+)
+```
+
+
+```{r section-3-pca-biplot-publication}
+## Sección 3. Figura PCA fisicoquímica para publicación -------------------
+
+pc1_percent <- varianza_pca$variance_explained_percent[
+  varianza_pca$PC == "PC1"
+]
+
+pc2_percent <- varianza_pca$variance_explained_percent[
+  varianza_pca$PC == "PC2"
+]
+
+## Escalar vectores para que sean visibles en el biplot -------------------
+
+rango_scores <- min(
+  diff(range(scores_pca$PC1)),
+  diff(range(scores_pca$PC2))
+)
+
+rango_loadings <- max(
+  sqrt(loadings_pca$PC1^2 + loadings_pca$PC2^2)
+)
+
+factor_vectores <- 0.38 * rango_scores / rango_loadings
+
+loadings_plot <- loadings_pca %>%
+  dplyr::mutate(
+    PC1_arrow = PC1 * factor_vectores,
+    PC2_arrow = PC2 * factor_vectores
+  )
+
+fig_pca_fq <- ggplot(
+  scores_pca,
+  aes(
+    x = PC1,
+    y = PC2,
+    color = Desert,
+    fill = Desert
+  )
+) +
+  geom_hline(
+    yintercept = 0,
+    linewidth = 0.3,
+    linetype = "dashed",
+    color = "grey55"
+  ) +
+  geom_vline(
+    xintercept = 0,
+    linewidth = 0.3,
+    linetype = "dashed",
+    color = "grey55"
+  ) +
+  stat_ellipse(
+    geom = "polygon",
+    alpha = 0.12,
+    linewidth = 0.35,
+    level = 0.68,
+    show.legend = FALSE
+  ) +
+  geom_point(
+    size = 3.4,
+    shape = 21,
+    color = "black",
+    stroke = 0.45
+  ) +
+  ggrepel::geom_text_repel(
+    aes(label = Unidad),
+    size = 3.3,
+    show.legend = FALSE,
+    max.overlaps = Inf
+  ) +
+  geom_segment(
+    data = loadings_plot,
+    aes(
+      x = 0,
+      y = 0,
+      xend = PC1_arrow,
+      yend = PC2_arrow
+    ),
+    inherit.aes = FALSE,
+    arrow = arrow(length = unit(0.18, "cm")),
+    linewidth = 0.45,
+    color = "grey20"
+  ) +
+  ggrepel::geom_text_repel(
+    data = loadings_plot,
+    aes(
+      x = PC1_arrow,
+      y = PC2_arrow,
+      label = variable_label
+    ),
+    inherit.aes = FALSE,
+    size = 3.1,
+    color = "grey10",
+    max.overlaps = Inf
+  ) +
+  annotate(
+    "label",
+    x = Inf,
+    y = -Inf,
+    label = permanova_env_label,
+    hjust = 1.05,
+    vjust = -0.6,
+    size = 3.4,
+    label.size = 0.25
+  ) +
+  scale_color_manual(values = colores_desierto) +
+  scale_fill_manual(values = colores_desierto) +
+  labs(
+    x = paste0(
+      "PC1 (",
+      formatC(pc1_percent, format = "f", digits = 1),
+      "%)"
+    ),
+    y = paste0(
+      "PC2 (",
+      formatC(pc2_percent, format = "f", digits = 1),
+      "%)"
+    ),
+    color = "Desert",
+    fill = "Desert",
+    title = "Physicochemical structure of soil samples",
+    subtitle = "Principal component analysis of scaled soil variables",
+    caption = "Points represent physicochemical sampling units. Arrows indicate variable loadings. Ellipses represent 68% normal confidence regions and are shown only as visual guides. Statistical test: PERMANOVA on Euclidean distances of scaled physicochemical variables."
+  ) +
+  publication_theme(base_size = 11) +
+  theme(
+    legend.position = "bottom",
+    plot.caption = element_text(hjust = 0)
+  )
+
+fig_pca_fq
+
+save_publication_figure(
+  fig_pca_fq,
+  filename = "03_physicochemical_PCA_publication",
+  width = 8,
+  height = 6
+)
+```
+
+```{r section-3-pca-contributions-figure}
+## Sección 3. Contribuciones de variables a PC1 y PC2 ---------------------
+
+contribuciones_pca_long <- loadings_pca %>%
+  dplyr::select(
+    variable_label,
+    contribution_PC1,
+    contribution_PC2
+  ) %>%
+  tidyr::pivot_longer(
+    cols = c(
+      contribution_PC1,
+      contribution_PC2
+    ),
+    names_to = "Axis",
+    values_to = "Contribution"
+  ) %>%
+  dplyr::mutate(
+    Axis = dplyr::recode(
+      Axis,
+      "contribution_PC1" = "PC1",
+      "contribution_PC2" = "PC2"
+    )
+  )
+
+top_contribuciones_pca <- contribuciones_pca_long %>%
+  dplyr::group_by(Axis) %>%
+  dplyr::slice_max(
+    order_by = Contribution,
+    n = 8,
+    with_ties = FALSE
+  ) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(
+    variable_label = forcats::fct_reorder(
+      variable_label,
+      Contribution
+    )
+  )
+
+fig_pca_contributions <- ggplot(
+  top_contribuciones_pca,
+  aes(
+    x = Contribution,
+    y = variable_label
+  )
+) +
+  geom_col(
+    width = 0.7,
+    fill = "grey60",
+    color = "black",
+    linewidth = 0.25
+  ) +
+  facet_wrap(
+    ~ Axis,
+    scales = "free_y"
+  ) +
+  labs(
+    x = "Contribution (%)",
+    y = NULL,
+    title = "Main physicochemical contributors to PCA axes",
+    subtitle = "Top variable contributions to PC1 and PC2",
+    caption = "Contributions were calculated from squared PCA loadings."
+  ) +
+  publication_theme(base_size = 11) +
+  theme(
+    strip.background = element_blank(),
+    strip.text = element_text(face = "bold"),
+    legend.position = "none"
+  )
+
+fig_pca_contributions
+
+save_publication_figure(
+  fig_pca_contributions,
+  filename = "03_physicochemical_PCA_variable_contributions",
+  width = 7,
+  height = 5.5
+)
+```
+
+```{r section-3-update-log}
+## Sección 3. Registrar PCA fisicoquímica en bitácora ---------------------
+
+write(
+  c(
+    "",
+    "## Parte 3. PCA fisicoquímica",
+    "",
+    paste("Fecha:", Sys.Date()),
+    "",
+    "### Objetivo",
+    "",
+    "Evaluar los principales gradientes fisicoquímicos del suelo mediante análisis de componentes principales.",
+    "",
+    "### Datos usados",
+    "",
+    "- Matriz fisicoquímica depurada: 02_env_qc_sin_NA_sin_varianza_cero.rds",
+    paste("- Número de unidades ambientales:", nrow(env_qc)),
+    paste("- Número de variables fisicoquímicas retenidas:", ncol(env_qc)),
+    "",
+    "### Decisiones metodológicas",
+    "",
+    "- Las variables fisicoquímicas fueron centradas y escaladas antes del PCA.",
+    "- El PCA se ejecutó con stats::prcomp.",
+    "- Las variables con NA, todos sus valores ausentes o varianza cero ya habían sido excluidas en la Sección 2.",
+    "- Se calculó PERMANOVA sobre distancias euclidianas de las variables fisicoquímicas escaladas para evaluar separación por desierto.",
+    "",
+    "### Resultados principales",
+    "",
+    paste(
+      "- Varianza explicada por PC1:",
+      paste0(formatC(pc1_percent, format = "f", digits = 2), "%")
+    ),
+    paste(
+      "- Varianza explicada por PC2:",
+      paste0(formatC(pc2_percent, format = "f", digits = 2), "%")
+    ),
+    paste("- Estadístico PERMANOVA:", permanova_env_label),
+    "",
+    "### Advertencia interpretativa",
+    "",
+    "La interpretación estadística debe ser cautelosa porque la matriz fisicoquímica contiene solo seis unidades ambientales, tres por desierto.",
+    "",
+    "### Archivos generados",
+    "",
+    "- 03_pca_physicochemical_variance_explained.tsv",
+    "- 03_pca_physicochemical_scores.tsv",
+    "- 03_pca_physicochemical_loadings_contributions.tsv",
+    "- 03_permanova_physicochemical_by_desert.tsv",
+    "- 03_physicochemical_PCA_publication.pdf/tiff/jpg",
+    "- 03_physicochemical_PCA_variable_contributions.pdf/tiff/jpg"
+  ),
+  archivo_bitacora,
+  append = TRUE
+)
+```
+

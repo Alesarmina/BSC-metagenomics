@@ -1,0 +1,324 @@
+---
+title: "Analisis_suelos_desiertos"
+author: "Gloria Sarmina"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Primero hay que preparar las tablas con los análisis fisicoquímicos
+```{r}
+# Cargar paquetes
+library(tidyverse)
+library(vegan)
+library(FactoMineR)
+install.packages("factoextra", dependencies = TRUE, ask = FALSE)
+library(factoextra)
+library(ggpubr)
+library(reshape2)
+install.packages("readxl")
+library(readxl)
+
+# Leer archivo
+suelo <- read_excel("Análisis_fisicoquímicos_desiertos_DF.xlsx")
+
+```
+Limpieza y transformación
+Convertir comas por puntos en variables numéricas.
+Convertir factores categóricos (Sitio, Cuadrante, Ident.) y asegurar que variables como Textural estén como factores.
+```{r}
+# Reemplazo de comas y conversión a numérico
+suelo <- suelo %>%
+  mutate(across(where(is.character), ~ gsub(",", ".", .))) %>%
+  mutate(across(c(pH, CE, MO, N, K, Ca, Mg, Na, CIC, Fe, N_NO3, N_NH4, Ct, Pt, arena, limo, arcilla), as.numeric)) %>%
+  mutate(Textural = as.factor(Textural),
+         Sitio = as.factor(Sitio),
+         Ident. = as.factor(Ident.))
+library(dplyr)
+suelo %>% 
+  summarise(across(where(is.numeric), ~ sum(is.na(.)), .names = "NAs_{.col}"))
+
+```
+Cómo se modifica el pH del suelo con la actividad microbiana
+```{r}
+library(ggplot2)
+
+ggplot(suelo, aes(x = Ident., y = pH, fill = Ident.)) +
+  geom_boxplot(width = 0.6, color = "black") +
+  facet_wrap(~Sitio) +
+  scale_fill_brewer(palette = "Set2") +  # Puedes cambiar a "Dark2", "Pastel1", etc.
+  labs(
+    title = "Comparación de pH del suelo por tratamiento",
+    subtitle = "Separado por desierto (CC y VG)",
+    x = "Tratamiento",
+    y = "pH"
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    strip.background = element_rect(fill = "gray90", color = NA),
+    strip.text = element_text(face = "bold", size = 13),
+    plot.title = element_text(face = "bold", size = 16),
+    legend.position = "none"
+  )
+
+```
+
+Para analizar todos los parámetros en un análisis multivariado
+PCOA
+# Selecciona solo las variables fisicoquímicas numéricas
+quimicos <- suelo %>%
+  select(pH, CE, MO, N, K, Ca, Mg, Na, CIC, Fe, N_NO3, N_NH4, Ct, Pt, arena, limo, arcilla)
+#Estandarizar variables 
+quimicos_scaled <- scale(quimicos)
+
+library(FactoMineR)
+library(factoextra)
+
+install.packages("missMDA")
+library(missMDA)
+library(tidyverse)
+str(quimicos)
+sum(is.na(quimicos))        # Cuántos NA totales hay
+
+quimicos <- as.data.frame(quimicos)
+
+quimicos <- suelo %>%
+  select(pH, CE, MO, N, K, Ca, Mg, Na, CIC, Fe, N_NO3, N_NH4, Ct, Pt, arena, limo, arcilla) %>%
+  mutate(across(everything(), as.numeric)) %>%  # asegura que todo sea numérico
+  as.data.frame()  # convierte a data.frame
+
+# 1. Estimar número óptimo de componentes
+library(missMDA)
+quimicos_clean <- as.data.frame(quimicos)
+quimicos_clean <- quimicos_clean[, sapply(quimicos_clean, is.numeric)]
+str(quimicos_clean)
+
+# 2. Imputar los valores faltantes
+library(missMDA)
+imputado <- imputePCA(quimicos_clean, ncp = 2, scale = TRUE)
+
+library(FactoMineR)
+datos_pca <- as.data.frame(imputado$completeObs)
+datos_pca <- datos_pca %>%
+  mutate(across(everything(), ~ as.numeric(.)))
+str(datos_pca)
+str(quimicos)
+summary(quimicos)
+
+library(dplyr)
+
+quimicos_clean <- suelo %>%
+  select(pH, CE, MO, N, K, Ca, Mg, Na, CIC, Fe, N_NO3, N_NH4, Ct, Pt, arena, limo, arcilla) %>%
+  mutate(across(everything(), as.numeric)) %>%
+  as.data.frame()
+str(quimicos_clean)
+
+#Imputación directa
+library(missMDA)
+imputado <- imputePCA(quimicos_clean, ncp = 2, scale = TRUE)
+str(imputado$completeObs)
+
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+# 1. Limpiar y preparar datos numéricos
+quimicos_clean <- suelo %>%
+  select(pH, CE, MO, N, K, Ca, Mg, Na, CIC, Fe,
+         N_NO3, N_NH4, Ct, Pt, arena, limo, arcilla) %>%
+  mutate(across(everything(), as.numeric)) %>%
+  as.data.frame()
+
+# 2. Verifica que todo esté bien
+summary(quimicos_clean)
+apply(quimicos_clean, 2, function(x) sd(x, na.rm = TRUE)) == 0
+quimicos_clean <- quimicos_clean %>%
+  select(where(~ sd(., na.rm = TRUE) != 0))
+
+# 3. Ejecutar PCA con prcomp (omite NA automáticamente si hay)
+pca_result <- prcomp(na.omit(quimicos_clean), scale. = TRUE)
+colnames(quimicos)[apply(quimicos, 2, function(x) sd(x, na.rm = TRUE)) == 0]
+
+
+# 4. Convertir resultados a data.frame para graficar
+pca_coords <- as.data.frame(pca_result$x)
+pca_coords$Sitio <- suelo$Sitio[!is.na(rowSums(quimicos_clean))]
+
+# 5. Visualizar
+ggplot(pca_coords, aes(x = PC1, y = PC2, color = Sitio)) +
+  geom_point(size = 3) +
+  stat_ellipse(type = "norm", linetype = 2) +
+  labs(title = "PCA del suelo (prcomp, sin imputación)",
+       x = "PC1", y = "PC2") +
+  theme_minimal()
+
+
+
+```
+```{r}
+biplot(pca_result, scale = 0)  # Básico, con base R
+library(factoextra)
+fviz_pca_biplot(pca_result,
+                geom.ind = "point",
+                col.ind = "gray40",
+                col.var = "red",
+                arrowsize = 1,
+                label = "var",
+                repel = TRUE,
+                title = "Biplot PCA: muestras y variables")
+
+fviz_pca_var(pca_result,
+             col.var = "contrib",
+             gradient.cols = c("blue", "orange", "red"),
+             repel = TRUE,
+             title = "Contribución de variables a PC1 y PC2")
+
+
+```
+```{r}
+library(factoextra)
+fviz_pca_ind(pca_result,
+             geom = "point",
+             habillage = interaction(suelo$Sitio, suelo$Ident.),
+             addEllipses = TRUE,
+             palette = "Set2",
+             title = "PCA: diferencias por desierto y tratamiento") +
+  theme_minimal()
+
+
+```
+```{r}
+library(vegan)
+
+# Calcular matriz de distancias euclidianas
+dist_suelo <- dist(quimicos_clean, method = "euclidean")
+
+# PERMANOVA con interacciones
+adonis2(dist_suelo ~ Sitio * Ident., data = suelo, permutations = 999)
+
+# Paquetes necesarios
+library(vegan)
+library(dplyr)
+library(knitr)
+
+# 1. Calcula la distancia euclidiana
+dist_suelo <- dist(quimicos_clean, method = "euclidean")
+
+# 2. Ejecuta PERMANOVA
+adonis_result <- adonis2(dist_suelo ~ Sitio * Ident., data = suelo, permutations = 999)
+
+# 3. Convierte resultados a data.frame
+adonis_df <- as.data.frame(adonis_result)
+
+# 4. Agrega una columna con codificación de significancia
+adonis_df$Signif <- cut(adonis_df$`Pr(>F)`,
+                        breaks = c(-Inf, 0.001, 0.01, 0.05, 0.1, Inf),
+                        labels = c("***", "**", "*", ".", " "),
+                        right = TRUE)
+
+# 5. Renombra columnas para el informe
+colnames(adonis_df) <- c("Grados de libertad", "Suma de cuadrados", "R²", "F", "valor p", "Significancia")
+
+# 6. Imprime tabla limpia (puedes exportarla también)
+kable(adonis_df, digits = 4, caption = "Tabla resumen del análisis PERMANOVA: diferencias entre desiertos y tratamientos")
+
+
+```
+Los desiertos CC y VG tienen perfiles fisicoquímicos muy distintos.
+Las costras modifican ligeramente esos perfiles.
+Ese efecto depende del desierto: por ejemplo, la actividad de la comunidad puede tener más impacto en VG que en CC, o viceversa.
+
+Sitio	*** p = 0.001	Los suelos del desierto CC son significativamente distintos a los del desierto VG en términos fisicoquímicos. Es el efecto más fuerte (98% de la varianza).
+Ident. (Costra/Control)	* p = 0.028	El tratamiento (costra vs control) también explica una parte significativa de la variación (0.4%). Aunque es menor, sigue siendo relevante.
+Sitio:Ident. (interacción)	* p = 0.026	La interacción entre desierto y tratamiento es significativa. Esto sugiere que el efecto del tratamiento cambia dependiendo del desierto.
+```{r}
+#Boxplots de variables clave diferenciadas por tratamiento dentro de cada desierto.
+library(ggplot2)
+library(dplyr)
+library(patchwork)
+
+# 1. Define las variables clave que quieres graficar
+variables_clave <- c("pH", "CE", "MO", "Ca", "Na", "arcilla")
+
+# 2. Función para graficar cada variable
+# En la función de boxplot, ajusta el título con \n para salto de línea
+graficar_boxplot <- function(variable) {
+  ggplot(suelo, aes(x = Ident., y = .data[[variable]], fill = Ident.)) +
+    geom_boxplot(width = 4, color = "black") +
+    facet_wrap(~Sitio) +
+    scale_fill_brewer(palette = "Set2") +
+    labs(
+      title = paste0("Distribución de\n", variable),
+      x = "Tratamiento",
+      y = variable
+    ) +
+    theme_bw(base_size = 14) +
+    theme(
+      strip.background = element_rect(fill = "gray90", color = NA),
+      strip.text = element_text(face = "bold", size = 13),
+      plot.title = element_text(face = "bold", size = 12, lineheight = 1.1),
+      legend.position = "none"
+    )
+}
+
+# 3. Aplica la función a cada variable
+plots <- lapply(variables_clave, graficar_boxplot)
+
+# 4. Opcional: visualizar uno por uno
+print(plots[[1]])
+
+# 5. O usar patchwork para mostrarlos juntos 
+install.packages("patchwork")
+
+
+
+wrap_plots(plots, ncol = 2)
+
+```
+```{r}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+
+# 1. Selecciona y agrupa
+variables_clave <- c("pH", "CE", "MO", "Ca", "Na", "arcilla")
+
+# 2. Calcular medias por grupo (Sitio × Tratamiento)
+tabla_medias <- suelo %>%
+  group_by(Sitio, Ident.) %>%
+  summarise(across(all_of(variables_clave), ~ mean(.x, na.rm = TRUE))) %>%
+  unite(Grupo, Sitio, Ident.) %>%
+  column_to_rownames("Grupo")
+
+# 3. Escalar (Z-score por variable)
+tabla_escalada <- scale(tabla_medias) %>% as.data.frame()
+
+# 4. Convertir a formato largo para graficar
+heatmap_data <- tabla_escalada %>%
+  rownames_to_column("Grupo") %>%
+  pivot_longer(-Grupo, names_to = "Variable", values_to = "Valor")
+
+# 5. Graficar heatmap
+ggplot(heatmap_data, aes(x = Variable, y = Grupo, fill = Valor)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0,
+                       name = "Z-score") +
+  labs(
+    title = "Mapa de calor de características fisicoquímicas",
+    subtitle = "Valores estandarizados por grupo (Sitio × Tratamiento)",
+    x = "Variable fisicoquímica",
+    y = "Grupo"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, face = "bold"),
+    axis.text.y = element_text(face = "bold"),
+    plot.title = element_text(face = "bold")
+  )
+
+```
+

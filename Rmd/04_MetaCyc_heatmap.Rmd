@@ -1,0 +1,3313 @@
+---
+title: "Heatmap_Metacyc"
+author: "Gloria Sarmina"
+date: "`r Sys.Date()`"
+output: html_document
+toc: true
+toc_depth: 
+number_sections: true
+theme: readable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# MetaCyc abundance heatmap
+
+## Descripción general del protocolo
+
+Este protocolo reconstruye el análisis de abundancias funcionales MetaCyc generado a partir de los resultados de HUMAnN3. El objetivo principal es producir un heatmap de funciones MetaCyc agrupadas por categorías ecológico-funcionales, comparando los perfiles funcionales de muestras provenientes de dos desiertos: Cuatro Ciénegas y Valle de Guadalupe.
+
+El flujo general del análisis consiste en: cargar la tabla de abundancias MetaCyc, eliminar entradas no informativas, renombrar las muestras con etiquetas ecológicas interpretables, construir una matriz de muestras por funciones, asignar cada muestra a su desierto de origen, clasificar las funciones en categorías funcionales mediante palabras clave, escalar las abundancias por función usando z-score, calcular diferencias globales de composición funcional mediante PERMANOVA y finalmente generar un heatmap con anotaciones por desierto y por categoría funcional.
+
+Este protocolo está diseñado para ser reproducible y trazable. Por ello, cada paso importante se registra en una bitácora del proyecto. Cada vez que se cargue o genere una tabla, se imprimen sus dimensiones y una vista de las primeras cinco filas para facilitar la revisión rápida del análisis.
+
+## Resumen metodológico
+
+Se analizaron abundancias funcionales MetaCyc obtenidas con HUMAnN3. Primero se eliminaron entradas no informativas correspondientes a funciones no mapeadas o no integradas. Posteriormente, las muestras fueron renombradas de acuerdo con su identidad ecológica y desierto de origen. La tabla funcional se transformó a una matriz de muestras por funciones, y cada muestra fue anotada como perteneciente a Cuatro Ciénegas o Valle de Guadalupe. Las funciones MetaCyc fueron agrupadas en categorías ecológico-funcionales mediante una clasificación heurística basada en palabras clave presentes en los nombres funcionales. Para visualizar patrones relativos de enriquecimiento o disminución funcional entre muestras, las abundancias fueron escaladas por función mediante transformación z-score. Se construyó un heatmap con agrupamiento jerárquico de muestras y funciones, incorporando anotaciones por desierto y por categoría funcional. Además, se evaluaron diferencias globales en la composición funcional entre desiertos mediante PERMANOVA basada en distancia Bray-Curtis calculada sobre abundancias relativas.
+
+# Bloque 0. Preparación del proyecto, directorios y bitácora
+
+```{r setup, message=FALSE, warning=FALSE}
+# ============================================================
+# MetaCyc_abundance_heatmap
+# Preparación inicial del protocolo
+# ============================================================
+
+# Limpiar ambiente de R
+rm(list = ls())
+
+# Limpiar consola
+cat("\014")
+
+# Opciones generales del R Markdown
+knitr::opts_chunk$set(
+  echo = TRUE,
+  message = FALSE,
+  warning = FALSE
+)
+
+# ============================================================
+# 0.1. Nombre del proyecto
+# ============================================================
+
+project_name <- "MetaCyc_abundance_heatmap"
+
+# ============================================================
+# 0.2. Directorios de entrada y salida
+# ============================================================
+# IMPORTANTE:
+# Esta ruta corresponde a la carpeta donde tienes el archivo:
+# rxn-cpm-metacyc.tsv
+
+dir_input <- "/Users/alejandrasarmina/Desktop/HUMAnN3/hummann_origen"
+
+# Carpeta principal donde se guardarán los outputs generados por este protocolo
+dir_project <- file.path(dir_input, project_name)
+
+# Subcarpetas de outputs
+dir_outputs <- file.path(dir_project, "outputs")
+dir_figures <- file.path(dir_outputs, "figures")
+dir_tables  <- file.path(dir_outputs, "tables")
+dir_logs    <- file.path(dir_outputs, "logs")
+dir_objects <- file.path(dir_outputs, "r_objects")
+
+# Archivo de entrada principal
+file_metacyc <- file.path(dir_input, "rxn-cpm-metacyc.tsv")
+
+
+# Crear carpetas si no existen
+dirs_to_create <- c(
+  dir_project,
+  dir_outputs,
+  dir_figures,
+  dir_tables,
+  dir_logs,
+  dir_objects
+)
+
+for (d in dirs_to_create) {
+  if (!dir.exists(d)) {
+    dir.create(d, recursive = TRUE)
+  }
+}
+
+# ============================================================
+# 0.3. Archivo de bitácora
+# ============================================================
+
+log_file <- file.path(
+  dir_logs,
+  paste0(project_name, "_bitacora.txt")
+)
+
+# Reiniciar bitácora cada vez que se corre el protocolo desde cero
+cat(
+  paste0(
+    "BITÁCORA DEL PROYECTO: ", project_name, "\n",
+    "Fecha de inicio: ", Sys.time(), "\n",
+    "============================================================\n\n"
+  ),
+  file = log_file
+)
+
+# ============================================================
+# 0.4. Funciones auxiliares para la bitácora
+# ============================================================
+
+log_write <- function(...) {
+  text <- paste0(...)
+  cat(text, "\n")
+  cat(text, "\n", file = log_file, append = TRUE)
+}
+
+log_step <- function(step_title, note = NULL) {
+  separator <- paste(rep("=", 60), collapse = "")
+  
+  log_write("\n", separator)
+  log_write(step_title)
+  log_write("Fecha y hora: ", Sys.time())
+  
+  if (!is.null(note)) {
+    log_write("Nota: ", note)
+  }
+  
+  log_write(separator, "\n")
+}
+
+preview_table <- function(x, table_name, n = 5, max_cols = 8) {
+  
+  log_write("\n--- Revisión de tabla: ", table_name, " ---")
+  
+  df <- as.data.frame(x)
+  
+  log_write(
+    "Dimensiones: ",
+    nrow(df), " filas x ",
+    ncol(df), " columnas"
+  )
+  
+  preview <- utils::head(df, n)
+  
+  if (is.finite(max_cols) && ncol(preview) > max_cols) {
+    preview_to_print <- preview[, seq_len(max_cols), drop = FALSE]
+    log_write(
+      "Vista previa: primeras ", n,
+      " filas y primeras ", max_cols,
+      " columnas. La tabla completa tiene ",
+      ncol(df), " columnas."
+    )
+  } else {
+    preview_to_print <- preview
+    log_write("Vista previa: primeras ", n, " filas.")
+  }
+  
+  captured_preview <- capture.output(print(preview_to_print))
+  
+  cat(
+    paste(captured_preview, collapse = "\n"),
+    "\n",
+    file = log_file,
+    append = TRUE
+  )
+  
+  print(preview_to_print)
+  
+  invisible(preview_to_print)
+}
+
+check_file_exists <- function(file_path, file_description = "archivo") {
+  if (!file.exists(file_path)) {
+    stop(
+      paste0(
+        "No se encontró el ", file_description, " en la ruta:\n",
+        file_path,
+        "\nRevisa que la ruta sea correcta antes de continuar."
+      )
+    )
+  } else {
+    log_write("Archivo encontrado: ", file_path)
+  }
+}
+
+# ============================================================
+# 0.5. Registrar directorios del protocolo
+# ============================================================
+
+log_step(
+  "Bloque 0. Preparación del proyecto, directorios y bitácora",
+  "Se definieron las rutas de entrada, salida, figuras, tablas, objetos de R y bitácora."
+)
+
+tabla_directorios <- tibble::tibble(
+  elemento = c(
+    "Nombre del proyecto",
+    "Directorio de entrada",
+    "Directorio del proyecto",
+    "Directorio de outputs",
+    "Directorio de figuras",
+    "Directorio de tablas",
+    "Directorio de bitácora",
+    "Directorio de objetos R",
+    "Archivo MetaCyc de entrada",
+    "Archivo de bitácora"
+  ),
+  ruta = c(
+    project_name,
+    dir_input,
+    dir_project,
+    dir_outputs,
+    dir_figures,
+    dir_tables,
+    dir_logs,
+    dir_objects,
+    file_metacyc,
+    log_file
+  )
+)
+
+preview_table(
+  tabla_directorios,
+  table_name = "tabla_directorios",
+  n = 5,
+  max_cols = Inf
+)
+
+# Verificar que el archivo principal exista
+check_file_exists(
+  file_metacyc,
+  file_description = "archivo de abundancias MetaCyc rxn-cpm-metacyc.tsv"
+)
+
+log_write("Bloque 0 completado correctamente.")
+```
+
+## Archivos de entrada
+
+El archivo de entrada principal de este protocolo es:
+
+```{r mostrar_archivo_entrada}
+file_metacyc
+```
+
+Este archivo corresponde a la tabla de abundancias funcionales MetaCyc generada a partir de HUMAnN3.
+
+## Archivos y carpetas generadas
+
+Los outputs se guardarán dentro del proyecto:
+
+```{r mostrar_directorio_proyecto}
+dir_project
+```
+
+Las figuras se guardarán en:
+
+```{r mostrar_directorio_figuras}
+dir_figures
+```
+
+Las tablas generadas se guardarán en:
+
+```{r mostrar_directorio_tablas}
+dir_tables
+```
+
+La bitácora del análisis se guardará en:
+
+```{r mostrar_bitacora}
+log_file
+```
+# Bloque 1. Carga de librerías y lectura del archivo MetaCyc
+
+```{r bloque_1_librerias_y_lectura_metacyc, message=FALSE, warning=FALSE}
+# ============================================================
+# Bloque 1. Carga de librerías y lectura del archivo MetaCyc
+# ============================================================
+
+log_step(
+  "Bloque 1. Carga de librerías y lectura del archivo MetaCyc",
+  "Se cargan las librerías necesarias y se lee la tabla rxn-cpm-metacyc.tsv."
+)
+
+# ============================================================
+# 1.1. Cargar librerías necesarias
+# ============================================================
+
+required_packages <- c(
+  "tidyverse",
+  "pheatmap",
+  "vegan",
+  "grid"
+)
+
+missing_packages <- required_packages[
+  !sapply(required_packages, requireNamespace, quietly = TRUE)
+]
+
+if (length(missing_packages) > 0) {
+  stop(
+    paste0(
+      "Faltan paquetes necesarios para correr el protocolo: ",
+      paste(missing_packages, collapse = ", "),
+      "\nInstálalos antes de continuar con install.packages()."
+    )
+  )
+}
+
+library(tidyverse)
+library(pheatmap)
+library(vegan)
+library(grid)
+
+log_write(
+  "Librerías cargadas correctamente: ",
+  paste(required_packages, collapse = ", ")
+)
+
+# ============================================================
+# 1.2. Verificar que el archivo de entrada exista
+# ============================================================
+
+check_file_exists(
+  file_metacyc,
+  file_description = "archivo de abundancias MetaCyc rxn-cpm-metacyc.tsv"
+)
+
+# ============================================================
+# 1.3. Leer tabla MetaCyc
+# ============================================================
+
+metacyc <- read_tsv(
+  file_metacyc,
+  show_col_types = FALSE
+)
+
+# Registrar tabla cargada en la bitácora
+preview_table(
+  metacyc,
+  table_name = "metacyc_raw_rxn_cpm_metacyc",
+  n = 5,
+  max_cols = 8
+)
+
+# ============================================================
+# 1.4. Revisar nombres de columnas
+# ============================================================
+
+metacyc_colnames <- tibble(
+  column_number = seq_along(colnames(metacyc)),
+  column_name = colnames(metacyc)
+)
+
+preview_table(
+  metacyc_colnames,
+  table_name = "metacyc_colnames",
+  n = 5,
+  max_cols = Inf
+)
+
+# ============================================================
+# 1.5. Verificar columna funcional principal
+# ============================================================
+
+if (!"# Gene Family" %in% colnames(metacyc)) {
+  stop(
+    paste0(
+      "No se encontró la columna '# Gene Family'.\n",
+      "Revisa si el archivo tiene otro nombre para la columna funcional principal."
+    )
+  )
+}
+
+log_write("Columna '# Gene Family' encontrada correctamente.")
+
+# ============================================================
+# 1.6. Guardar objeto crudo leído desde HUMAnN3
+# ============================================================
+
+saveRDS(
+  metacyc,
+  file = file.path(dir_objects, "01_metacyc_raw.rds")
+)
+
+log_write(
+  "Objeto metacyc guardado en: ",
+  file.path(dir_objects, "01_metacyc_raw.rds")
+)
+
+log_write("Bloque 1 completado correctamente.")
+```
+
+## Revisión rápida del archivo MetaCyc cargado
+
+```{r bloque_1_resumen_metacyc}
+dim(metacyc)
+head(metacyc, 5)
+```
+# Bloque 2. Limpieza de funciones no informativas
+
+En este bloque se limpia la tabla de abundancias MetaCyc. Primero se eliminan las filas no informativas asociadas a `UNMAPPED` y `UNINTEGRATED`, que corresponden a lecturas o abundancias que HUMAnN3 no pudo asignar a funciones interpretables. Después se eliminan las dos primeras filas restantes, que en este archivo corresponden a metadatos internos de HUMAnN3: `Sample` y `Type`.
+
+Este paso es necesario para conservar únicamente funciones MetaCyc cuantitativas antes de construir la matriz funcional.
+
+```{r bloque_2_limpieza_metacyc, message=FALSE, warning=FALSE}
+# ============================================================
+# Bloque 2. Limpieza de funciones no informativas
+# ============================================================
+
+log_step(
+  "Bloque 2. Limpieza de funciones no informativas",
+  "Se eliminan filas UNMAPPED/UNINTEGRATED y las filas internas Sample y Type."
+)
+
+# ============================================================
+# 2.1. Contar filas originales
+# ============================================================
+
+n_rows_original <- nrow(metacyc)
+
+log_write(
+  "Número de filas originales en metacyc: ",
+  n_rows_original
+)
+
+# ============================================================
+# 2.2. Identificar filas UNMAPPED o UNINTEGRATED
+# ============================================================
+
+metacyc_unmapped_unintegrated <- metacyc %>%
+  filter(grepl("UNMAPPED|UNINTEGRATED", `# Gene Family`))
+
+preview_table(
+  metacyc_unmapped_unintegrated,
+  table_name = "metacyc_unmapped_unintegrated",
+  n = 5,
+  max_cols = 8
+)
+
+log_write(
+  "Número de filas UNMAPPED/UNINTEGRATED detectadas: ",
+  nrow(metacyc_unmapped_unintegrated)
+)
+
+# ============================================================
+# 2.3. Eliminar filas UNMAPPED y UNINTEGRATED
+# ============================================================
+
+metacyc_no_unmapped <- metacyc %>%
+  filter(!grepl("UNMAPPED|UNINTEGRATED", `# Gene Family`))
+
+preview_table(
+  metacyc_no_unmapped,
+  table_name = "metacyc_no_unmapped",
+  n = 5,
+  max_cols = 8
+)
+
+log_write(
+  "Número de filas después de eliminar UNMAPPED/UNINTEGRATED: ",
+  nrow(metacyc_no_unmapped)
+)
+
+# ============================================================
+# 2.4. Revisar las dos primeras filas que se eliminarán
+# ============================================================
+# En este archivo, estas filas corresponden a:
+# Sample
+# Type
+
+metacyc_internal_rows_removed <- metacyc_no_unmapped %>%
+  slice(1:2)
+
+preview_table(
+  metacyc_internal_rows_removed,
+  table_name = "metacyc_internal_rows_removed_sample_type",
+  n = 5,
+  max_cols = 8
+)
+
+log_write(
+  "Filas internas que se eliminarán después del filtrado UNMAPPED/UNINTEGRATED: ",
+  paste(metacyc_internal_rows_removed$`# Gene Family`, collapse = ", ")
+)
+
+# ============================================================
+# 2.5. Eliminar filas internas Sample y Type
+# ============================================================
+
+metacyc_clean <- metacyc_no_unmapped %>%
+  slice(-c(1, 2))
+
+preview_table(
+  metacyc_clean,
+  table_name = "metacyc_clean",
+  n = 5,
+  max_cols = 8
+)
+
+log_write(
+  "Número de filas finales en metacyc_clean: ",
+  nrow(metacyc_clean)
+)
+
+log_write(
+  "Número de columnas finales en metacyc_clean: ",
+  ncol(metacyc_clean)
+)
+
+# ============================================================
+# 2.6. Verificar que no queden filas no informativas
+# ============================================================
+
+remaining_noninformative <- metacyc_clean %>%
+  filter(grepl("UNMAPPED|UNINTEGRATED|^Sample$|^Type$", `# Gene Family`))
+
+preview_table(
+  remaining_noninformative,
+  table_name = "remaining_noninformative_rows_after_cleaning",
+  n = 5,
+  max_cols = 8
+)
+
+if (nrow(remaining_noninformative) > 0) {
+  stop(
+    paste0(
+      "Todavía quedan filas no informativas en metacyc_clean. ",
+      "Revisa el objeto remaining_noninformative."
+    )
+  )
+} else {
+  log_write(
+    "Verificación correcta: no quedan filas UNMAPPED, UNINTEGRATED, Sample o Type en metacyc_clean."
+  )
+}
+
+# ============================================================
+# 2.7. Guardar tabla limpia
+# ============================================================
+
+saveRDS(
+  metacyc_clean,
+  file = file.path(dir_objects, "02_metacyc_clean.rds")
+)
+
+write_tsv(
+  metacyc_clean,
+  file = file.path(dir_tables, "02_metacyc_clean.tsv")
+)
+
+log_write(
+  "Objeto metacyc_clean guardado en: ",
+  file.path(dir_objects, "02_metacyc_clean.rds")
+)
+
+log_write(
+  "Tabla metacyc_clean guardada en: ",
+  file.path(dir_tables, "02_metacyc_clean.tsv")
+)
+
+# ============================================================
+# 2.8. Resumen del bloque
+# ============================================================
+
+tabla_resumen_limpieza <- tibble(
+  paso = c(
+    "Filas originales",
+    "Filas UNMAPPED/UNINTEGRATED eliminadas",
+    "Filas internas Sample/Type eliminadas",
+    "Filas finales en metacyc_clean"
+  ),
+  n_filas = c(
+    n_rows_original,
+    nrow(metacyc_unmapped_unintegrated),
+    nrow(metacyc_internal_rows_removed),
+    nrow(metacyc_clean)
+  )
+)
+
+preview_table(
+  tabla_resumen_limpieza,
+  table_name = "tabla_resumen_limpieza",
+  n = 5,
+  max_cols = Inf
+)
+
+write_csv(
+  tabla_resumen_limpieza,
+  file = file.path(dir_tables, "02_resumen_limpieza_metacyc.csv")
+)
+
+log_write(
+  "Tabla resumen de limpieza guardada en: ",
+  file.path(dir_tables, "02_resumen_limpieza_metacyc.csv")
+)
+
+log_write("Bloque 2 completado correctamente.")
+```
+
+## Revisión rápida de la tabla limpia
+
+```{r bloque_2_revision_metacyc_clean}
+dim(metacyc_clean)
+head(metacyc_clean, 5)
+```
+# Bloque 3. Renombrar muestras y construir matriz funcional
+
+En este bloque se renombran las muestras usando etiquetas ecológicas interpretables. Los nombres originales de HUMAnN3, por ejemplo `A11_Abundance-RPKs`, se simplifican primero a `A11` y después se renombran de acuerdo con el diseño de muestreo.
+
+Posteriormente, la tabla se transforma a una matriz funcional con muestras como filas y funciones MetaCyc como columnas. Esta matriz será la base para el heatmap, el escalamiento por función y la PERMANOVA.
+
+```{r bloque_3_renombrar_muestras_y_matriz, message=FALSE, warning=FALSE}
+# ============================================================
+# Bloque 3. Renombrar muestras y construir matriz funcional
+# ============================================================
+
+log_step(
+  "Bloque 3. Renombrar muestras y construir matriz funcional",
+  "Se renombran las muestras y se construye la matriz muestras x funciones."
+)
+
+# ============================================================
+# 3.1. Extraer nombres originales de las columnas de abundancia
+# ============================================================
+
+nombres_originales <- colnames(metacyc_clean)[-1]
+
+tabla_nombres_originales <- tibble(
+  column_number = seq_along(nombres_originales),
+  nombre_original = nombres_originales
+)
+
+preview_table(
+  tabla_nombres_originales,
+  table_name = "tabla_nombres_originales",
+  n = 5,
+  max_cols = Inf
+)
+
+# ============================================================
+# 3.2. Quitar sufijo técnico de HUMAnN3
+# ============================================================
+
+nombres_sin_sufijo <- str_remove(
+  nombres_originales,
+  "_Abundance-RPKs$"
+)
+
+tabla_nombres_sin_sufijo <- tibble(
+  column_number = seq_along(nombres_originales),
+  nombre_original = nombres_originales,
+  nombre_sin_sufijo = nombres_sin_sufijo
+)
+
+preview_table(
+  tabla_nombres_sin_sufijo,
+  table_name = "tabla_nombres_sin_sufijo",
+  n = 5,
+  max_cols = Inf
+)
+
+# ============================================================
+# 3.3. Diccionario de renombrado de muestras
+# ============================================================
+# Este diccionario reproduce el renombrado usado en el protocolo original.
+
+renombres <- c(
+  "A1"  = "A1_CC",
+  "A21" = "A2_CC",
+  "A22" = "A3_CC",
+  "A4"  = "B1_CC",
+  "A5"  = "B2_CC",
+  "A6"  = "B3_CC",
+  "A7"  = "C1_CC",
+  "A8"  = "C2_CC",
+  "A9"  = "C3_CC",
+  "A23" = "D1_VG",
+  "A11" = "D2_VG",
+  "A12" = "D3_VG",
+  "A13" = "E1_VG",
+  "A14" = "E2_VG",
+  "A15" = "E3_VG",
+  "A16" = "F1_VG",
+  "A17" = "F2_VG",
+  "A24" = "F3_VG"
+)
+
+tabla_diccionario_renombres <- tibble(
+  nombre_sin_sufijo = names(renombres),
+  nombre_final = as.character(renombres)
+)
+
+preview_table(
+  tabla_diccionario_renombres,
+  table_name = "tabla_diccionario_renombres",
+  n = 5,
+  max_cols = Inf
+)
+
+# ============================================================
+# 3.4. Aplicar renombrado
+# ============================================================
+
+nuevos_nombres <- renombres[nombres_sin_sufijo]
+
+tabla_renombrado_muestras <- tibble(
+  nombre_original = nombres_originales,
+  nombre_sin_sufijo = nombres_sin_sufijo,
+  nombre_final = as.character(nuevos_nombres)
+)
+
+preview_table(
+  tabla_renombrado_muestras,
+  table_name = "tabla_renombrado_muestras",
+  n = 5,
+  max_cols = Inf
+)
+
+# Verificar que todas las muestras hayan sido reconocidas
+muestras_sin_renombre <- tabla_renombrado_muestras %>%
+  filter(is.na(nombre_final))
+
+preview_table(
+  muestras_sin_renombre,
+  table_name = "muestras_sin_renombre",
+  n = 5,
+  max_cols = Inf
+)
+
+if (nrow(muestras_sin_renombre) > 0) {
+  stop(
+    paste0(
+      "Hay muestras sin renombrar. Revisa la tabla muestras_sin_renombre.\n",
+      "Probablemente algún nombre de columna no coincide con el diccionario de renombrado."
+    )
+  )
+} else {
+  log_write("Verificación correcta: todas las muestras fueron renombradas.")
+}
+
+# Aplicar nombres finales a la tabla limpia
+metacyc_renamed <- metacyc_clean
+
+colnames(metacyc_renamed)[-1] <- as.character(nuevos_nombres)
+
+preview_table(
+  metacyc_renamed,
+  table_name = "metacyc_renamed",
+  n = 5,
+  max_cols = 8
+)
+
+# ============================================================
+# 3.5. Verificar duplicados en nombres de funciones
+# ============================================================
+# Para construir la matriz, los nombres de funciones deben poder usarse
+# como nombres de columnas después de la transposición.
+
+duplicated_functions <- metacyc_renamed %>%
+  count(`# Gene Family`, name = "n") %>%
+  filter(n > 1) %>%
+  arrange(desc(n))
+
+preview_table(
+  duplicated_functions,
+  table_name = "duplicated_functions",
+  n = 5,
+  max_cols = Inf
+)
+
+if (nrow(duplicated_functions) > 0) {
+  stop(
+    paste0(
+      "Se detectaron funciones MetaCyc duplicadas en '# Gene Family'.\n",
+      "Para reproducir exactamente el protocolo original, no se modificaron los nombres.\n",
+      "Necesitamos revisar estos duplicados antes de continuar."
+    )
+  )
+} else {
+  log_write("Verificación correcta: no hay nombres de funciones duplicados.")
+}
+
+# ============================================================
+# 3.6. Construir matriz funcional muestras x funciones
+# ============================================================
+# Tabla original:
+# filas = funciones
+# columnas = muestras
+#
+# Matriz final:
+# filas = muestras
+# columnas = funciones
+
+metacyc_matrix <- metacyc_renamed %>%
+  column_to_rownames(var = "# Gene Family") %>%
+  t() %>%
+  as.data.frame(check.names = FALSE) %>%
+  mutate(across(everything(), as.numeric))
+
+preview_table(
+  metacyc_matrix,
+  table_name = "metacyc_matrix_muestras_por_funciones",
+  n = 5,
+  max_cols = 8
+)
+
+log_write(
+  "Dimensiones de metacyc_matrix: ",
+  nrow(metacyc_matrix),
+  " muestras x ",
+  ncol(metacyc_matrix),
+  " funciones MetaCyc."
+)
+
+# ============================================================
+# 3.7. Verificar valores NA después de convertir a numérico
+# ============================================================
+
+total_na_matrix <- sum(is.na(metacyc_matrix))
+
+tabla_revision_na_matrix <- tibble(
+  objeto = "metacyc_matrix",
+  total_na = total_na_matrix,
+  total_valores = nrow(metacyc_matrix) * ncol(metacyc_matrix),
+  porcentaje_na = round(
+    100 * total_na_matrix / (nrow(metacyc_matrix) * ncol(metacyc_matrix)),
+    4
+  )
+)
+
+preview_table(
+  tabla_revision_na_matrix,
+  table_name = "tabla_revision_na_matrix",
+  n = 5,
+  max_cols = Inf
+)
+
+if (total_na_matrix > 0) {
+  log_write(
+    "Advertencia: metacyc_matrix contiene valores NA después de la conversión a numérico."
+  )
+} else {
+  log_write("Verificación correcta: metacyc_matrix no contiene valores NA.")
+}
+
+# ============================================================
+# 3.8. Crear anotación de filas por desierto
+# ============================================================
+
+annot_row <- data.frame(
+  Muestra = rownames(metacyc_matrix),
+  Desierto = case_when(
+    str_detect(rownames(metacyc_matrix), "_CC$") ~ "CC",
+    str_detect(rownames(metacyc_matrix), "_VG$") ~ "VG",
+    TRUE ~ "Desconocido"
+  )
+)
+
+rownames(annot_row) <- annot_row$Muestra
+
+preview_table(
+  annot_row,
+  table_name = "annot_row_muestras_desierto",
+  n = 5,
+  max_cols = Inf
+)
+
+# ============================================================
+# 3.9. Revisar número de muestras por desierto
+# ============================================================
+
+tabla_muestras_por_desierto <- annot_row %>%
+  as_tibble() %>%
+  count(Desierto, name = "n_muestras")
+
+preview_table(
+  tabla_muestras_por_desierto,
+  table_name = "tabla_muestras_por_desierto",
+  n = 5,
+  max_cols = Inf
+)
+
+if ("Desconocido" %in% tabla_muestras_por_desierto$Desierto) {
+  stop(
+    "Hay muestras clasificadas como Desconocido. Revisa los nombres de filas de metacyc_matrix."
+  )
+} else {
+  log_write("Verificación correcta: todas las muestras fueron asignadas a CC o VG.")
+}
+
+# ============================================================
+# 3.10. Guardar objetos y tablas del bloque
+# ============================================================
+
+saveRDS(
+  metacyc_renamed,
+  file = file.path(dir_objects, "03_metacyc_renamed.rds")
+)
+
+saveRDS(
+  metacyc_matrix,
+  file = file.path(dir_objects, "03_metacyc_matrix.rds")
+)
+
+saveRDS(
+  annot_row,
+  file = file.path(dir_objects, "03_annot_row.rds")
+)
+
+write_csv(
+  tabla_renombrado_muestras,
+  file = file.path(dir_tables, "03_tabla_renombrado_muestras.csv")
+)
+
+write_csv(
+  tabla_muestras_por_desierto,
+  file = file.path(dir_tables, "03_muestras_por_desierto.csv")
+)
+
+log_write(
+  "Objeto metacyc_renamed guardado en: ",
+  file.path(dir_objects, "03_metacyc_renamed.rds")
+)
+
+log_write(
+  "Objeto metacyc_matrix guardado en: ",
+  file.path(dir_objects, "03_metacyc_matrix.rds")
+)
+
+log_write(
+  "Objeto annot_row guardado en: ",
+  file.path(dir_objects, "03_annot_row.rds")
+)
+
+log_write(
+  "Tabla de renombrado de muestras guardada en: ",
+  file.path(dir_tables, "03_tabla_renombrado_muestras.csv")
+)
+
+log_write(
+  "Tabla de muestras por desierto guardada en: ",
+  file.path(dir_tables, "03_muestras_por_desierto.csv")
+)
+
+log_write("Bloque 3 completado correctamente.")
+```
+
+## Revisión rápida de la matriz funcional y anotación de muestras
+
+```{r bloque_3_revision_matriz_y_anotacion}
+dim(metacyc_matrix)
+head(metacyc_matrix[, 1:5], 5)
+
+dim(annot_row)
+head(annot_row, 5)
+```
+# Bloque 4. Clasificación de funciones MetaCyc en categorías ecológico-funcionales
+
+En este bloque se asigna cada función MetaCyc a una categoría funcional usando una estrategia heurística basada en palabras clave. Esto significa que el protocolo busca ciertos términos dentro del nombre de cada función, por ejemplo `photosynthesis`, `nitrate`, `phosphate`, `cytochrome` o `UV`, y con base en esas coincidencias asigna una categoría ecológico-funcional.
+
+Este paso no usa un archivo oficial de mapeo de MetaCyc a categorías, sino una clasificación interpretativa construida para organizar visualmente las funciones en el heatmap.
+
+```{r bloque_4_clasificacion_funcional, message=FALSE, warning=FALSE}
+# ============================================================
+# Bloque 4. Clasificación de funciones MetaCyc en categorías
+# ecológico-funcionales
+# ============================================================
+
+log_step(
+  "Bloque 4. Clasificación de funciones MetaCyc en categorías ecológico-funcionales",
+  "Se asignan categorías funcionales mediante palabras clave presentes en los nombres de las funciones MetaCyc."
+)
+
+# ============================================================
+# 4.1. Crear tabla de palabras clave por categoría funcional
+# ============================================================
+# Esta tabla reproduce la clasificación heurística usada en el
+# protocolo original.
+
+categorias <- tribble(
+  ~categoria, ~keywords,
+  "Glucólisis y metabolismo central", "glycolysis|EMP|TCA|pyruvate|gluconeogenesis",
+  "Ciclo del carbono", "Calvin|carbon[- ]fixation|rubisco|CO2 fixation",
+  "Fotosíntesis y pigmentos", "photosynthesis|chlorophyll|bacteriochlorophyll|light",
+  "Respiración y transporte de electrones", "cytochrome|oxidase|ferredoxin|menaquinone",
+  "Fermentación", "fermentation|alcohol|lactate|butyrate",
+  "Metabolismo del nitrógeno", "nitrate|nitrite|ammonium|nitrogenase",
+  "Metabolismo del azufre", "sulfate|sulfite|sulfur",
+  "Metabolismo del fósforo", "phosphate|phosphonate|phosphatase",
+  "Metabolismo del metano y C1", "methanogenesis|methane|methylamine",
+  "Aminoácidos: biosíntesis", "synthesis of arginine|leucine|lysine",
+  "Aminoácidos: degradación", "degradation of tyrosine|valine|phenylalanine",
+  "Lípidos y ácidos grasos", "fatty acid|lipid metabolism|beta[- ]oxidation",
+  "Nucleótidos", "purine|pyrimidine|adenine|guanine",
+  "Vitaminas y cofactores", "biotin|folate|cobalamin|thiamine",
+  "Polisacáridos y pared celular", "peptidoglycan|capsule|LPS|teichoic acid",
+  "Transporte y secreción", "ABC transporter|PTS system|secretion system",
+  "Señalización y quimiotaxis", "two-component|chemotaxis|quorum sensing",
+  "Estrés oxidativo y respuesta ambiental", "superoxide|catalase|heat shock",
+  "Metabolismo de compuestos aromáticos", "benzoate|phenol|catechol",
+  "Degradación de xenobióticos", "pesticide|hydrocarbon|pollutant",
+  "Metabolismo de compuestos secundarios", "siderophore|terpene|polyketide",
+  "Biofilm y adhesión", "adhesin|pili|biofilm|EPS",
+  "Protección UV", "UV|pigment|carotenoid|crt|phz|mel|mycosporine|sunscreen",
+  "Movilidad celular", "flagellum|motility|chemotaxis"
+)
+
+preview_table(
+  categorias,
+  table_name = "categorias_keywords",
+  n = 5,
+  max_cols = Inf
+)
+
+log_write(
+  "Número de categorías funcionales definidas en la tabla de palabras clave: ",
+  nrow(categorias)
+)
+
+# ============================================================
+# 4.2. Extraer nombres de funciones MetaCyc
+# ============================================================
+
+funciones <- colnames(metacyc_matrix)
+
+tabla_funciones_metacyc <- tibble(
+  function_number = seq_along(funciones),
+  Funcion = funciones
+)
+
+preview_table(
+  tabla_funciones_metacyc,
+  table_name = "tabla_funciones_metacyc",
+  n = 5,
+  max_cols = Inf
+)
+
+log_write(
+  "Número total de funciones MetaCyc que serán clasificadas: ",
+  length(funciones)
+)
+
+# ============================================================
+# 4.3. Inicializar todas las funciones como no clasificadas
+# ============================================================
+
+categorias_vector <- rep(
+  "Otras funciones / sin clasificar",
+  length(funciones)
+)
+
+# ============================================================
+# 4.4. Asignar categorías usando palabras clave
+# ============================================================
+# Importante:
+# Si una función coincide con más de una categoría, el resultado final
+# corresponde a la última categoría que haga coincidencia dentro del
+# orden de la tabla 'categorias'. Esto reproduce la lógica del
+# protocolo original.
+
+for (i in 1:nrow(categorias)) {
+  
+  patron <- categorias$keywords[i]
+  categoria <- categorias$categoria[i]
+  
+  coincidencias <- grepl(
+    patron,
+    funciones,
+    ignore.case = TRUE
+  )
+  
+  categorias_vector[coincidencias] <- categoria
+  
+  log_write(
+    "Categoría evaluada: ",
+    categoria,
+    " | Funciones coincidentes: ",
+    sum(coincidencias)
+  )
+}
+
+# ============================================================
+# 4.5. Crear anotación de columnas para el heatmap
+# ============================================================
+# annot_col tendrá una fila por función MetaCyc y una columna con
+# la categoría funcional asignada.
+
+annot_col <- data.frame(
+  Categoría = categorias_vector
+)
+
+rownames(annot_col) <- funciones
+
+preview_table(
+  annot_col,
+  table_name = "annot_col_funciones_categoria",
+  n = 5,
+  max_cols = Inf
+)
+
+# ============================================================
+# 4.6. Crear tabla explícita función-categoría
+# ============================================================
+
+tabla_funcion_categoria <- tibble(
+  Funcion = funciones,
+  Categoria = categorias_vector
+)
+
+preview_table(
+  tabla_funcion_categoria,
+  table_name = "tabla_funcion_categoria",
+  n = 5,
+  max_cols = Inf
+)
+
+# ============================================================
+# 4.7. Resumen de número de funciones por categoría
+# ============================================================
+
+tabla_resumen_categorias <- tabla_funcion_categoria %>%
+  count(Categoria, name = "Number_of_functions") %>%
+  arrange(desc(Number_of_functions))
+
+preview_table(
+  tabla_resumen_categorias,
+  table_name = "tabla_resumen_categorias",
+  n = 5,
+  max_cols = Inf
+)
+
+log_write(
+  "Número de categorías funcionales presentes después de la clasificación: ",
+  nrow(tabla_resumen_categorias)
+)
+
+# ============================================================
+# 4.8. Verificar funciones no clasificadas
+# ============================================================
+
+tabla_funciones_no_clasificadas <- tabla_funcion_categoria %>%
+  filter(Categoria == "Otras funciones / sin clasificar")
+
+preview_table(
+  tabla_funciones_no_clasificadas,
+  table_name = "tabla_funciones_no_clasificadas",
+  n = 5,
+  max_cols = Inf
+)
+
+log_write(
+  "Número de funciones que quedaron como 'Otras funciones / sin clasificar': ",
+  nrow(tabla_funciones_no_clasificadas)
+)
+
+# ============================================================
+# 4.9. Verificar correspondencia entre matriz y anotación
+# ============================================================
+
+mismas_funciones <- identical(
+  colnames(metacyc_matrix),
+  rownames(annot_col)
+)
+
+tabla_revision_matriz_anotacion <- tibble(
+  revision = "colnames(metacyc_matrix) idénticos a rownames(annot_col)",
+  resultado = mismas_funciones
+)
+
+preview_table(
+  tabla_revision_matriz_anotacion,
+  table_name = "tabla_revision_matriz_anotacion",
+  n = 5,
+  max_cols = Inf
+)
+
+if (!mismas_funciones) {
+  stop(
+    "Los nombres de funciones en metacyc_matrix no coinciden exactamente con los rownames de annot_col."
+  )
+} else {
+  log_write(
+    "Verificación correcta: las funciones de metacyc_matrix coinciden con annot_col."
+  )
+}
+
+# ============================================================
+# 4.10. Guardar objetos y tablas del bloque
+# ============================================================
+
+saveRDS(
+  categorias,
+  file = file.path(dir_objects, "04_categorias_keywords.rds")
+)
+
+saveRDS(
+  annot_col,
+  file = file.path(dir_objects, "04_annot_col.rds")
+)
+
+saveRDS(
+  tabla_funcion_categoria,
+  file = file.path(dir_objects, "04_tabla_funcion_categoria.rds")
+)
+
+write_csv(
+  categorias,
+  file = file.path(dir_tables, "04_categorias_keywords.csv")
+)
+
+write_csv(
+  tabla_funcion_categoria,
+  file = file.path(dir_tables, "04_tabla_funcion_categoria.csv")
+)
+
+write_csv(
+  tabla_resumen_categorias,
+  file = file.path(dir_tables, "04_resumen_categorias_funcionales.csv")
+)
+
+write_csv(
+  tabla_funciones_no_clasificadas,
+  file = file.path(dir_tables, "04_funciones_no_clasificadas.csv")
+)
+
+log_write(
+  "Objeto categorias guardado en: ",
+  file.path(dir_objects, "04_categorias_keywords.rds")
+)
+
+log_write(
+  "Objeto annot_col guardado en: ",
+  file.path(dir_objects, "04_annot_col.rds")
+)
+
+log_write(
+  "Tabla función-categoría guardada en: ",
+  file.path(dir_tables, "04_tabla_funcion_categoria.csv")
+)
+
+log_write(
+  "Resumen de categorías funcionales guardado en: ",
+  file.path(dir_tables, "04_resumen_categorias_funcionales.csv")
+)
+
+log_write(
+  "Tabla de funciones no clasificadas guardada en: ",
+  file.path(dir_tables, "04_funciones_no_clasificadas.csv")
+)
+
+log_write("Bloque 4 completado correctamente.")
+```
+
+## Revisión rápida de la clasificación funcional
+
+```{r bloque_4_revision_clasificacion_funcional}
+dim(annot_col)
+head(annot_col, 5)
+
+tabla_resumen_categorias
+```
+# Bloque 5. Escalamiento, abundancias relativas y PERMANOVA funcional
+
+En este bloque se preparan las matrices cuantitativas para la visualización y el análisis estadístico. Primero se revisa que las funciones MetaCyc tengan variación entre muestras, ya que el escalamiento por z-score requiere desviación estándar distinta de cero. Después se escala cada función de manera independiente para visualizar enriquecimientos o disminuciones relativas entre muestras.
+
+Además, se construye una matriz de abundancias relativas por muestra y se calcula una distancia Bray-Curtis. Esta distancia se usa en una PERMANOVA para evaluar si la composición funcional MetaCyc difiere entre los desiertos `CC` y `VG`.
+
+```{r bloque_5_escalamiento_permanova, message=FALSE, warning=FALSE}
+# ============================================================
+# Bloque 5. Escalamiento, abundancias relativas y PERMANOVA funcional
+# ============================================================
+
+log_step(
+  "Bloque 5. Escalamiento, abundancias relativas y PERMANOVA funcional",
+  "Se escalan las funciones por z-score, se calculan abundancias relativas y se corre PERMANOVA con Bray-Curtis."
+)
+
+# ============================================================
+# 5.1. Asegurar que la anotación de filas tenga solo la variable Desierto
+# ============================================================
+# Conservamos una copia completa por si se necesita revisar el nombre de muestra.
+
+annot_row_full <- annot_row
+
+if ("Muestra" %in% colnames(annot_row)) {
+  annot_row <- annot_row %>%
+    select(Desierto)
+}
+
+annot_row$Desierto <- factor(
+  annot_row$Desierto,
+  levels = c("CC", "VG")
+)
+
+preview_table(
+  annot_row,
+  table_name = "annot_row_para_heatmap_y_permanova",
+  n = 5,
+  max_cols = Inf
+)
+
+# Verificar que el orden de annot_row coincide con metacyc_matrix
+orden_muestras_correcto <- identical(
+  rownames(metacyc_matrix),
+  rownames(annot_row)
+)
+
+tabla_revision_orden_muestras <- tibble(
+  revision = "rownames(metacyc_matrix) idénticos a rownames(annot_row)",
+  resultado = orden_muestras_correcto
+)
+
+preview_table(
+  tabla_revision_orden_muestras,
+  table_name = "tabla_revision_orden_muestras",
+  n = 5,
+  max_cols = Inf
+)
+
+if (!orden_muestras_correcto) {
+  stop(
+    "El orden de las muestras en metacyc_matrix no coincide con annot_row. No continuar hasta corregirlo."
+  )
+} else {
+  log_write(
+    "Verificación correcta: el orden de las muestras coincide entre metacyc_matrix y annot_row."
+  )
+}
+
+# ============================================================
+# 5.2. Revisar varianza de las funciones antes del escalamiento
+# ============================================================
+
+metacyc_matrix_numeric <- as.matrix(metacyc_matrix)
+
+function_means <- apply(
+  metacyc_matrix_numeric,
+  2,
+  mean,
+  na.rm = TRUE
+)
+
+function_sds <- apply(
+  metacyc_matrix_numeric,
+  2,
+  sd,
+  na.rm = TRUE
+)
+
+tabla_revision_variacion_funciones <- tibble(
+  Funcion = colnames(metacyc_matrix_numeric),
+  media = as.numeric(function_means),
+  sd = as.numeric(function_sds),
+  varianza_cero = sd == 0
+)
+
+preview_table(
+  tabla_revision_variacion_funciones,
+  table_name = "tabla_revision_variacion_funciones",
+  n = 5,
+  max_cols = Inf
+)
+
+tabla_funciones_varianza_cero <- tabla_revision_variacion_funciones %>%
+  filter(varianza_cero)
+
+preview_table(
+  tabla_funciones_varianza_cero,
+  table_name = "tabla_funciones_varianza_cero",
+  n = 5,
+  max_cols = Inf
+)
+
+log_write(
+  "Número de funciones con desviación estándar cero: ",
+  nrow(tabla_funciones_varianza_cero)
+)
+
+if (nrow(tabla_funciones_varianza_cero) > 0) {
+  stop(
+    paste0(
+      "Hay funciones con varianza cero. El escalamiento z-score produciría NA/NaN.\n",
+      "Revisa la tabla_funciones_varianza_cero antes de continuar."
+    )
+  )
+} else {
+  log_write(
+    "Verificación correcta: no hay funciones con varianza cero. Se puede aplicar scale()."
+  )
+}
+
+# ============================================================
+# 5.3. Escalar abundancias por función mediante z-score
+# ============================================================
+# Cada columna corresponde a una función MetaCyc.
+# Por lo tanto, scale() centra y escala cada función a:
+# media = 0, desviación estándar = 1.
+
+metacyc_scaled <- scale(metacyc_matrix_numeric)
+
+metacyc_scaled_df <- as.data.frame(
+  metacyc_scaled,
+  check.names = FALSE
+) %>%
+  rownames_to_column("Muestra")
+
+preview_table(
+  metacyc_scaled_df,
+  table_name = "metacyc_scaled_zscore",
+  n = 5,
+  max_cols = 8
+)
+
+# ============================================================
+# 5.4. Revisar NA, NaN e Inf después del escalamiento
+# ============================================================
+
+total_na_scaled <- sum(is.na(metacyc_scaled))
+total_nan_scaled <- sum(is.nan(metacyc_scaled))
+total_inf_scaled <- sum(is.infinite(metacyc_scaled))
+
+tabla_revision_scaled <- tibble(
+  objeto = "metacyc_scaled",
+  total_na = total_na_scaled,
+  total_nan = total_nan_scaled,
+  total_inf = total_inf_scaled,
+  min_zscore = min(metacyc_scaled, na.rm = TRUE),
+  max_zscore = max(metacyc_scaled, na.rm = TRUE)
+)
+
+preview_table(
+  tabla_revision_scaled,
+  table_name = "tabla_revision_scaled",
+  n = 5,
+  max_cols = Inf
+)
+
+if (total_na_scaled > 0 | total_nan_scaled > 0 | total_inf_scaled > 0) {
+  stop(
+    "metacyc_scaled contiene NA, NaN o Inf. Revisa antes de continuar con el heatmap."
+  )
+} else {
+  log_write(
+    "Verificación correcta: metacyc_scaled no contiene NA, NaN ni Inf."
+  )
+}
+
+# ============================================================
+# 5.5. Calcular abundancias relativas por muestra
+# ============================================================
+# Para PERMANOVA se usa una matriz de abundancias relativas.
+# Cada valor se divide entre la suma total de abundancias de su muestra.
+
+row_sums_metacyc <- rowSums(metacyc_matrix_numeric)
+
+tabla_sumas_por_muestra <- tibble(
+  Muestra = rownames(metacyc_matrix_numeric),
+  suma_abundancia = as.numeric(row_sums_metacyc)
+)
+
+preview_table(
+  tabla_sumas_por_muestra,
+  table_name = "tabla_sumas_por_muestra",
+  n = 5,
+  max_cols = Inf
+)
+
+if (any(row_sums_metacyc == 0)) {
+  stop(
+    "Hay muestras con suma total de abundancia igual a cero. No se pueden calcular abundancias relativas."
+  )
+} else {
+  log_write(
+    "Verificación correcta: todas las muestras tienen suma total de abundancia mayor que cero."
+  )
+}
+
+metacyc_rel <- sweep(
+  metacyc_matrix_numeric,
+  1,
+  row_sums_metacyc,
+  FUN = "/"
+)
+
+metacyc_rel_df <- as.data.frame(
+  metacyc_rel,
+  check.names = FALSE
+) %>%
+  rownames_to_column("Muestra")
+
+preview_table(
+  metacyc_rel_df,
+  table_name = "metacyc_rel_abundancias_relativas",
+  n = 5,
+  max_cols = 8
+)
+
+# Revisar que cada muestra sume aproximadamente 1
+tabla_revision_sumas_relativas <- tibble(
+  Muestra = rownames(metacyc_rel),
+  suma_abundancia_relativa = as.numeric(rowSums(metacyc_rel))
+)
+
+preview_table(
+  tabla_revision_sumas_relativas,
+  table_name = "tabla_revision_sumas_relativas",
+  n = 5,
+  max_cols = Inf
+)
+
+# ============================================================
+# 5.6. Calcular distancia Bray-Curtis
+# ============================================================
+
+dist_funcional_bray <- vegdist(
+  metacyc_rel,
+  method = "bray"
+)
+
+dist_funcional_bray_matrix <- as.matrix(dist_funcional_bray)
+
+preview_table(
+  dist_funcional_bray_matrix,
+  table_name = "dist_funcional_bray_matrix",
+  n = 5,
+  max_cols = 8
+)
+
+log_write(
+  "Distancia Bray-Curtis calculada correctamente sobre metacyc_rel."
+)
+
+# ============================================================
+# 5.7. PERMANOVA funcional
+# ============================================================
+# Se usa set.seed para que el resultado de permutaciones sea reproducible
+# de ahora en adelante.
+
+permanova_seed <- 123
+set.seed(permanova_seed)
+
+permanova_funcional <- adonis2(
+  dist_funcional_bray ~ Desierto,
+  data = annot_row,
+  permutations = 999
+)
+
+permanova_table <- as.data.frame(permanova_funcional) %>%
+  rownames_to_column("Term")
+
+preview_table(
+  permanova_table,
+  table_name = "permanova_funcional_table",
+  n = 5,
+  max_cols = Inf
+)
+
+r2_perm <- permanova_funcional$R2[1]
+p_perm  <- permanova_funcional$`Pr(>F)`[1]
+
+texto_permanova <- paste0(
+  "PERMANOVA: R² = ",
+  round(r2_perm, 3),
+  ", p = ",
+  signif(p_perm, 3)
+)
+
+# Este nombre se crea también para evitar problemas en bloques posteriores
+# donde el protocolo original usaba permanova_label.
+permanova_label <- texto_permanova
+
+tabla_permanova_label <- tibble(
+  estadistico = c("R2", "p_value", "label", "seed"),
+  valor = c(
+    as.character(round(r2_perm, 6)),
+    as.character(signif(p_perm, 6)),
+    permanova_label,
+    as.character(permanova_seed)
+  )
+)
+
+preview_table(
+  tabla_permanova_label,
+  table_name = "tabla_permanova_label",
+  n = 5,
+  max_cols = Inf
+)
+
+log_write(
+  "Etiqueta de PERMANOVA generada: ",
+  permanova_label
+)
+
+# ============================================================
+# 5.8. Guardar objetos y tablas del bloque
+# ============================================================
+
+saveRDS(
+  annot_row_full,
+  file = file.path(dir_objects, "05_annot_row_full.rds")
+)
+
+saveRDS(
+  annot_row,
+  file = file.path(dir_objects, "05_annot_row_heatmap_permanova.rds")
+)
+
+saveRDS(
+  metacyc_scaled,
+  file = file.path(dir_objects, "05_metacyc_scaled_zscore.rds")
+)
+
+saveRDS(
+  metacyc_rel,
+  file = file.path(dir_objects, "05_metacyc_rel_abundancias_relativas.rds")
+)
+
+saveRDS(
+  dist_funcional_bray,
+  file = file.path(dir_objects, "05_dist_funcional_bray.rds")
+)
+
+saveRDS(
+  permanova_funcional,
+  file = file.path(dir_objects, "05_permanova_funcional.rds")
+)
+
+write_tsv(
+  metacyc_scaled_df,
+  file = file.path(dir_tables, "05_metacyc_scaled_zscore.tsv")
+)
+
+write_tsv(
+  metacyc_rel_df,
+  file = file.path(dir_tables, "05_metacyc_rel_abundancias_relativas.tsv")
+)
+
+write_csv(
+  tabla_revision_variacion_funciones,
+  file = file.path(dir_tables, "05_revision_variacion_funciones.csv")
+)
+
+write_csv(
+  tabla_funciones_varianza_cero,
+  file = file.path(dir_tables, "05_funciones_varianza_cero.csv")
+)
+
+write_csv(
+  tabla_sumas_por_muestra,
+  file = file.path(dir_tables, "05_sumas_abundancia_por_muestra.csv")
+)
+
+write_csv(
+  as.data.frame(dist_funcional_bray_matrix) %>%
+    rownames_to_column("Muestra"),
+  file = file.path(dir_tables, "05_distancia_bray_curtis_funcional.csv")
+)
+
+write_csv(
+  permanova_table,
+  file = file.path(dir_tables, "05_permanova_funcional.csv")
+)
+
+write_csv(
+  tabla_permanova_label,
+  file = file.path(dir_tables, "05_permanova_label.csv")
+)
+
+log_write(
+  "Objeto metacyc_scaled guardado en: ",
+  file.path(dir_objects, "05_metacyc_scaled_zscore.rds")
+)
+
+log_write(
+  "Objeto metacyc_rel guardado en: ",
+  file.path(dir_objects, "05_metacyc_rel_abundancias_relativas.rds")
+)
+
+log_write(
+  "Objeto dist_funcional_bray guardado en: ",
+  file.path(dir_objects, "05_dist_funcional_bray.rds")
+)
+
+log_write(
+  "Objeto permanova_funcional guardado en: ",
+  file.path(dir_objects, "05_permanova_funcional.rds")
+)
+
+log_write(
+  "Tabla PERMANOVA guardada en: ",
+  file.path(dir_tables, "05_permanova_funcional.csv")
+)
+
+log_write("Bloque 5 completado correctamente.")
+```
+# Bloque 6. Heatmap principal en español con PERMANOVA
+
+En este bloque se genera el heatmap principal en español usando la matriz de abundancias MetaCyc escalada por función mediante z-score. La figura incluye anotaciones por desierto y por categoría funcional, así como la etiqueta de PERMANOVA calculada en el Bloque 5.
+
+El heatmap permite visualizar qué funciones MetaCyc presentan valores relativos altos o bajos en cada muestra. Los valores positivos de z-score indican mayor abundancia relativa respecto al promedio de esa función, mientras que los valores negativos indican menor abundancia relativa.
+
+```{r bloque_6_heatmap_espanol, message=FALSE, warning=FALSE}
+# ============================================================
+# Bloque 6. Heatmap principal en español con PERMANOVA
+# ============================================================
+
+log_step(
+  "Bloque 6. Heatmap principal en español con PERMANOVA",
+  "Se genera el heatmap de abundancia MetaCyc escalada por función, con anotaciones por desierto y categoría funcional."
+)
+
+# ============================================================
+# 6.1. Preparar colores para anotaciones
+# ============================================================
+
+colores_desierto <- c(
+  "CC" = "#E9A4A0",
+  "VG" = "mediumaquamarine"
+)
+
+categorias_usadas <- unique(annot_col$Categoría)
+
+paleta_categorias <- c(
+  "#E69F00", "#56B4E9", "#009E73", "#F0E442",
+  "#0072B2", "#D55E00", "#CC79A7", "#999999",
+  "#66C2A5", "#FC8D62", "#8DA0CB", "#E78AC3",
+  "#A6D854", "#FFD92F", "#E5C494", "#B3B3B3",
+  "#1B9E77", "#D95F02", "#7570B3", "#E7298A",
+  "#66A61E", "#E6AB02", "#A6761D", "#666666"
+)
+
+if (length(categorias_usadas) > length(paleta_categorias)) {
+  stop(
+    "Hay más categorías funcionales que colores disponibles en paleta_categorias."
+  )
+}
+
+colores_categorias <- setNames(
+  paleta_categorias[seq_along(categorias_usadas)],
+  categorias_usadas
+)
+
+annotation_colors_es <- list(
+  Desierto = colores_desierto,
+  Categoría = colores_categorias
+)
+
+tabla_colores_desierto <- tibble(
+  Desierto = names(colores_desierto),
+  color = as.character(colores_desierto)
+)
+
+preview_table(
+  tabla_colores_desierto,
+  table_name = "tabla_colores_desierto",
+  n = 5,
+  max_cols = Inf
+)
+
+tabla_colores_categorias <- tibble(
+  Categoria = names(colores_categorias),
+  color = as.character(colores_categorias)
+)
+
+preview_table(
+  tabla_colores_categorias,
+  table_name = "tabla_colores_categorias",
+  n = 5,
+  max_cols = Inf
+)
+
+# ============================================================
+# 6.2. Definir escala de color del heatmap
+# ============================================================
+# Azul: menor abundancia relativa respecto al promedio de la función.
+# Blanco: valor cercano al promedio.
+# Rojo: mayor abundancia relativa respecto al promedio.
+
+breaks_heatmap_es <- seq(
+  -2,
+  4,
+  length.out = 100
+)
+
+tabla_breaks_heatmap_es <- tibble(
+  min_break = min(breaks_heatmap_es),
+  max_break = max(breaks_heatmap_es),
+  n_breaks = length(breaks_heatmap_es)
+)
+
+preview_table(
+  tabla_breaks_heatmap_es,
+  table_name = "tabla_breaks_heatmap_es",
+  n = 5,
+  max_cols = Inf
+)
+
+# ============================================================
+# 6.3. Verificar correspondencia entre matriz y anotaciones
+# ============================================================
+
+revision_heatmap_es <- tibble(
+  revision = c(
+    "rownames(metacyc_scaled) idénticos a rownames(annot_row)",
+    "colnames(metacyc_scaled) idénticos a rownames(annot_col)",
+    "permanova_label existe"
+  ),
+  resultado = c(
+    identical(rownames(metacyc_scaled), rownames(annot_row)),
+    identical(colnames(metacyc_scaled), rownames(annot_col)),
+    exists("permanova_label")
+  )
+)
+
+preview_table(
+  revision_heatmap_es,
+  table_name = "revision_heatmap_es",
+  n = 5,
+  max_cols = Inf
+)
+
+if (!all(revision_heatmap_es$resultado)) {
+  stop(
+    "Alguna correspondencia entre matriz y anotaciones falló. Revisa revision_heatmap_es antes de continuar."
+  )
+} else {
+  log_write(
+    "Verificación correcta: metacyc_scaled, annot_row, annot_col y permanova_label están listos para el heatmap."
+  )
+}
+
+# ============================================================
+# 6.4. Generar heatmap principal en español
+# ============================================================
+
+heatmap_metacyc_es <- pheatmap(
+  metacyc_scaled,
+  annotation_row = annot_row,
+  annotation_col = annot_col,
+  annotation_colors = annotation_colors_es,
+  show_colnames = FALSE,
+  show_rownames = FALSE,
+  cluster_cols = TRUE,
+  cluster_rows = TRUE,
+  fontsize = 7,
+  border_color = NA,
+  breaks = breaks_heatmap_es,
+  color = colorRampPalette(
+    c("navy", "white", "firebrick3")
+  )(100),
+  main = "Funciones MetaCyc agrupadas por categoría ecológica\nAbundancia escalada por función (z-score)",
+  silent = TRUE
+)
+
+log_write(
+  "Heatmap principal en español generado y guardado como objeto heatmap_metacyc_es."
+)
+
+# ============================================================
+# 6.5. Mostrar heatmap en el visor gráfico de RStudio
+# ============================================================
+
+grid.newpage()
+grid.draw(heatmap_metacyc_es$gtable)
+
+grid.text(
+  permanova_label,
+  x = 0.5,
+  y = 0.02,
+  gp = gpar(
+    fontsize = 11,
+    fontface = "bold"
+  )
+)
+
+log_write(
+  "Heatmap principal en español dibujado en el visor gráfico con etiqueta: ",
+  permanova_label
+)
+
+# ============================================================
+# 6.6. Guardar heatmap en JPG
+# ============================================================
+
+file_heatmap_es_jpg <- file.path(
+  dir_figures,
+  "06_heatmap_metacyc_zscore_permanova_espanol.jpg"
+)
+
+jpeg(
+  filename = file_heatmap_es_jpg,
+  width = 14,
+  height = 10,
+  units = "in",
+  res = 300
+)
+
+grid.newpage()
+grid.draw(heatmap_metacyc_es$gtable)
+
+grid.text(
+  permanova_label,
+  x = 0.5,
+  y = 0.02,
+  gp = gpar(
+    fontsize = 11,
+    fontface = "bold"
+  )
+)
+
+dev.off()
+
+log_write(
+  "Heatmap principal en español guardado en JPG: ",
+  file_heatmap_es_jpg
+)
+
+# ============================================================
+# 6.7. Guardar heatmap en PDF
+# ============================================================
+
+file_heatmap_es_pdf <- file.path(
+  dir_figures,
+  "06_heatmap_metacyc_zscore_permanova_espanol.pdf"
+)
+
+pdf(
+  file = file_heatmap_es_pdf,
+  width = 14,
+  height = 10
+)
+
+grid.newpage()
+grid.draw(heatmap_metacyc_es$gtable)
+
+grid.text(
+  permanova_label,
+  x = 0.5,
+  y = 0.02,
+  gp = gpar(
+    fontsize = 11,
+    fontface = "bold"
+  )
+)
+
+dev.off()
+
+log_write(
+  "Heatmap principal en español guardado en PDF: ",
+  file_heatmap_es_pdf
+)
+
+# ============================================================
+# 6.8. Guardar objetos y tablas del bloque
+# ============================================================
+
+saveRDS(
+  heatmap_metacyc_es,
+  file = file.path(dir_objects, "06_heatmap_metacyc_es.rds")
+)
+
+write_csv(
+  tabla_colores_desierto,
+  file = file.path(dir_tables, "06_colores_desierto_es.csv")
+)
+
+write_csv(
+  tabla_colores_categorias,
+  file = file.path(dir_tables, "06_colores_categorias_es.csv")
+)
+
+write_csv(
+  revision_heatmap_es,
+  file = file.path(dir_tables, "06_revision_heatmap_es.csv")
+)
+
+log_write(
+  "Objeto heatmap_metacyc_es guardado en: ",
+  file.path(dir_objects, "06_heatmap_metacyc_es.rds")
+)
+
+log_write(
+  "Tabla de colores de desierto guardada en: ",
+  file.path(dir_tables, "06_colores_desierto_es.csv")
+)
+
+log_write(
+  "Tabla de colores de categorías guardada en: ",
+  file.path(dir_tables, "06_colores_categorias_es.csv")
+)
+
+log_write(
+  "Tabla de revisión del heatmap guardada en: ",
+  file.path(dir_tables, "06_revision_heatmap_es.csv")
+)
+
+# ============================================================
+# 6.9. Resumen de archivos generados
+# ============================================================
+
+tabla_outputs_heatmap_es <- tibble(
+  output = c(
+    "Heatmap español JPG",
+    "Heatmap español PDF",
+    "Objeto R heatmap",
+    "Colores de desierto",
+    "Colores de categorías",
+    "Revisión del heatmap"
+  ),
+  ruta = c(
+    file_heatmap_es_jpg,
+    file_heatmap_es_pdf,
+    file.path(dir_objects, "06_heatmap_metacyc_es.rds"),
+    file.path(dir_tables, "06_colores_desierto_es.csv"),
+    file.path(dir_tables, "06_colores_categorias_es.csv"),
+    file.path(dir_tables, "06_revision_heatmap_es.csv")
+  )
+)
+
+preview_table(
+  tabla_outputs_heatmap_es,
+  table_name = "tabla_outputs_heatmap_es",
+  n = 5,
+  max_cols = Inf
+)
+
+write_csv(
+  tabla_outputs_heatmap_es,
+  file = file.path(dir_tables, "06_outputs_heatmap_es.csv")
+)
+
+log_write(
+  "Tabla de outputs del heatmap en español guardada en: ",
+  file.path(dir_tables, "06_outputs_heatmap_es.csv")
+)
+
+log_write("Bloque 6 completado correctamente.")
+```
+
+## Revisión rápida de los archivos generados
+
+```{r bloque_6_revision_outputs}
+tabla_outputs_heatmap_es
+file.exists(file_heatmap_es_jpg)
+file.exists(file_heatmap_es_pdf)
+```
+# Bloque 7. Heatmap final en inglés para publicación
+
+En este bloque se genera una versión del heatmap en inglés, pensada para usarse como figura de publicación. Se conservan todas las funciones MetaCyc y todas las categorías funcionales presentes en el análisis. Las anotaciones de filas y columnas se traducen al inglés, y se guardan versiones en JPG y PDF.
+
+Esta figura usa la misma matriz escalada por función mediante z-score y mantiene la anotación estadística de PERMANOVA calculada previamente.
+
+```{r bloque_7_heatmap_publicacion_ingles, message=FALSE, warning=FALSE}
+# ============================================================
+# Bloque 7. Heatmap final en inglés para publicación
+# ============================================================
+
+log_step(
+  "Bloque 7. Heatmap final en inglés para publicación",
+  "Se genera la versión publication-quality del heatmap, con etiquetas y anotaciones en inglés."
+)
+
+# ============================================================
+# 7.1. Seleccionar todas las funciones presentes en annot_col
+# ============================================================
+# Importante:
+# En esta versión NO se elimina ninguna categoría funcional.
+# Esto reproduce la lógica del protocolo final:
+# functions_filtered <- rownames(annot_col)
+
+functions_filtered <- rownames(annot_col)
+
+tabla_functions_filtered <- tibble(
+  function_number = seq_along(functions_filtered),
+  Function = functions_filtered
+)
+
+preview_table(
+  tabla_functions_filtered,
+  table_name = "tabla_functions_filtered_all_functions",
+  n = 5,
+  max_cols = Inf
+)
+
+log_write(
+  "Número de funciones incluidas en el heatmap de publicación: ",
+  length(functions_filtered)
+)
+
+# ============================================================
+# 7.2. Filtrar matriz y anotación de columnas
+# ============================================================
+# Aunque se usa la palabra 'filtered', aquí se conservan todas
+# las funciones presentes en annot_col.
+
+metacyc_matrix_filtered <- metacyc_matrix[, functions_filtered, drop = FALSE]
+
+annot_col_filtered <- annot_col[functions_filtered, , drop = FALSE]
+
+preview_table(
+  as.data.frame(metacyc_matrix_filtered) %>%
+    rownames_to_column("Sample"),
+  table_name = "metacyc_matrix_filtered_all_functions",
+  n = 5,
+  max_cols = 8
+)
+
+preview_table(
+  annot_col_filtered,
+  table_name = "annot_col_filtered_spanish",
+  n = 5,
+  max_cols = Inf
+)
+
+# ============================================================
+# 7.3. Preparar anotación de filas en inglés
+# ============================================================
+
+annot_row_publication <- annot_row
+
+if ("Desierto" %in% colnames(annot_row_publication)) {
+  colnames(annot_row_publication)[
+    colnames(annot_row_publication) == "Desierto"
+  ] <- "Desert"
+}
+
+annot_row_publication$Desert <- recode(
+  as.character(annot_row_publication$Desert),
+  "Cuatro Ciénegas" = "CC",
+  "Valle de Guadalupe" = "VG",
+  .default = as.character(annot_row_publication$Desert)
+)
+
+annot_row_publication$Desert <- factor(
+  annot_row_publication$Desert,
+  levels = c("CC", "VG")
+)
+
+preview_table(
+  annot_row_publication,
+  table_name = "annot_row_publication",
+  n = 5,
+  max_cols = Inf
+)
+
+# ============================================================
+# 7.4. Preparar anotación de columnas en inglés
+# ============================================================
+
+annot_col_publication <- annot_col_filtered
+
+if ("Categoría" %in% colnames(annot_col_publication)) {
+  colnames(annot_col_publication)[
+    colnames(annot_col_publication) == "Categoría"
+  ] <- "Functional category"
+}
+
+annot_col_publication <- annot_col_publication %>%
+  mutate(
+    `Functional category` = recode(
+      `Functional category`,
+      "Glucólisis y metabolismo central" = "Glycolysis and central metabolism",
+      "Ciclo del carbono" = "Carbon cycle",
+      "Fotosíntesis y pigmentos" = "Photosynthesis and pigments",
+      "Respiración y transporte de electrones" = "Respiration and electron transport",
+      "Fermentación" = "Fermentation",
+      "Metabolismo del nitrógeno" = "Nitrogen metabolism",
+      "Metabolismo del azufre" = "Sulfur metabolism",
+      "Metabolismo del fósforo" = "Phosphorus metabolism",
+      "Metabolismo del metano y C1" = "Methane and C1 metabolism",
+      "Aminoácidos: biosíntesis" = "Amino acid biosynthesis",
+      "Aminoácidos: degradación" = "Amino acid degradation",
+      "Lípidos y ácidos grasos" = "Lipids and fatty acids",
+      "Nucleótidos" = "Nucleotides",
+      "Vitaminas y cofactores" = "Vitamins and cofactors",
+      "Polisacáridos y pared celular" = "Polysaccharides and cell wall",
+      "Transporte y secreción" = "Transport and secretion",
+      "Señalización y quimiotaxis" = "Signaling and chemotaxis",
+      "Estrés oxidativo y respuesta ambiental" = "Oxidative stress and environmental response",
+      "Metabolismo de compuestos aromáticos" = "Aromatic compound metabolism",
+      "Degradación de xenobióticos" = "Xenobiotic degradation",
+      "Metabolismo de compuestos secundarios" = "Secondary compound metabolism",
+      "Biofilm y adhesión" = "Biofilm and adhesion",
+      "Protección UV" = "UV protection",
+      "Movilidad celular" = "Cell motility",
+      "Otras funciones / sin clasificar" = "Other or unclassified functions",
+      .default = `Functional category`
+    )
+  )
+
+preview_table(
+  annot_col_publication,
+  table_name = "annot_col_publication_english",
+  n = 5,
+  max_cols = Inf
+)
+
+# ============================================================
+# 7.5. Resumen de categorías funcionales incluidas
+# ============================================================
+
+heatmap_category_summary <- annot_col_publication %>%
+  count(`Functional category`, name = "Number_of_functions") %>%
+  arrange(desc(Number_of_functions))
+
+preview_table(
+  heatmap_category_summary,
+  table_name = "heatmap_category_summary_publication",
+  n = 5,
+  max_cols = Inf
+)
+
+log_write(
+  "Número de categorías funcionales incluidas en la figura de publicación: ",
+  nrow(heatmap_category_summary)
+)
+
+# ============================================================
+# 7.6. Escalar nuevamente la matriz filtrada
+# ============================================================
+# Esto reproduce el protocolo original de publicación:
+# metacyc_scaled <- scale(metacyc_matrix_filtered)
+
+metacyc_scaled_publication <- scale(
+  as.matrix(metacyc_matrix_filtered)
+)
+
+metacyc_scaled_publication_df <- as.data.frame(
+  metacyc_scaled_publication,
+  check.names = FALSE
+) %>%
+  rownames_to_column("Sample")
+
+preview_table(
+  metacyc_scaled_publication_df,
+  table_name = "metacyc_scaled_publication_zscore",
+  n = 5,
+  max_cols = 8
+)
+
+tabla_revision_scaled_publication <- tibble(
+  objeto = "metacyc_scaled_publication",
+  total_na = sum(is.na(metacyc_scaled_publication)),
+  total_nan = sum(is.nan(metacyc_scaled_publication)),
+  total_inf = sum(is.infinite(metacyc_scaled_publication)),
+  min_zscore = min(metacyc_scaled_publication, na.rm = TRUE),
+  max_zscore = max(metacyc_scaled_publication, na.rm = TRUE)
+)
+
+preview_table(
+  tabla_revision_scaled_publication,
+  table_name = "tabla_revision_scaled_publication",
+  n = 5,
+  max_cols = Inf
+)
+
+if (
+  sum(is.na(metacyc_scaled_publication)) > 0 |
+  sum(is.nan(metacyc_scaled_publication)) > 0 |
+  sum(is.infinite(metacyc_scaled_publication)) > 0
+) {
+  stop(
+    "metacyc_scaled_publication contiene NA, NaN o Inf. Revisa antes de continuar."
+  )
+} else {
+  log_write(
+    "Verificación correcta: metacyc_scaled_publication no contiene NA, NaN ni Inf."
+  )
+}
+
+# ============================================================
+# 7.7. Definir escala de color y colores de anotación
+# ============================================================
+
+custom_breaks_publication <- seq(
+  -2,
+  4,
+  length.out = 100
+)
+
+tabla_breaks_publication <- tibble(
+  min_break = min(custom_breaks_publication),
+  max_break = max(custom_breaks_publication),
+  n_breaks = length(custom_breaks_publication)
+)
+
+preview_table(
+  tabla_breaks_publication,
+  table_name = "tabla_breaks_publication",
+  n = 5,
+  max_cols = Inf
+)
+
+desert_colors_publication <- c(
+  "CC" = "#E9A4A0",
+  "VG" = "mediumaquamarine"
+)
+
+colorblind_palette_19 <- c(
+  "#E69F00", "#56B4E9", "#009E73", "#F0E442",
+  "#0072B2", "#D55E00", "#CC79A7", "#999999",
+  "#66C2A5", "#FC8D62", "#8DA0CB", "#E78AC3",
+  "#A6D854", "#FFD92F", "#E5C494", "#B3B3B3",
+  "#1B9E77", "#D95F02", "#7570B3"
+)
+
+categories_used_publication <- unique(
+  annot_col_publication$`Functional category`
+)
+
+if (length(categories_used_publication) > length(colorblind_palette_19)) {
+  stop(
+    "Hay más categorías funcionales que colores disponibles en colorblind_palette_19."
+  )
+}
+
+category_colors_publication <- setNames(
+  colorblind_palette_19[seq_along(categories_used_publication)],
+  categories_used_publication
+)
+
+annotation_colors_publication <- list(
+  Desert = desert_colors_publication,
+  `Functional category` = category_colors_publication
+)
+
+tabla_colores_desierto_publication <- tibble(
+  Desert = names(desert_colors_publication),
+  color = as.character(desert_colors_publication)
+)
+
+preview_table(
+  tabla_colores_desierto_publication,
+  table_name = "tabla_colores_desierto_publication",
+  n = 5,
+  max_cols = Inf
+)
+
+tabla_colores_categorias_publication <- tibble(
+  `Functional category` = names(category_colors_publication),
+  color = as.character(category_colors_publication)
+)
+
+preview_table(
+  tabla_colores_categorias_publication,
+  table_name = "tabla_colores_categorias_publication",
+  n = 5,
+  max_cols = Inf
+)
+
+# ============================================================
+# 7.8. Verificar correspondencia entre matriz y anotaciones
+# ============================================================
+
+revision_heatmap_publication <- tibble(
+  revision = c(
+    "rownames(metacyc_scaled_publication) idénticos a rownames(annot_row_publication)",
+    "colnames(metacyc_scaled_publication) idénticos a rownames(annot_col_publication)",
+    "permanova_label existe"
+  ),
+  resultado = c(
+    identical(
+      rownames(metacyc_scaled_publication),
+      rownames(annot_row_publication)
+    ),
+    identical(
+      colnames(metacyc_scaled_publication),
+      rownames(annot_col_publication)
+    ),
+    exists("permanova_label")
+  )
+)
+
+preview_table(
+  revision_heatmap_publication,
+  table_name = "revision_heatmap_publication",
+  n = 5,
+  max_cols = Inf
+)
+
+if (!all(revision_heatmap_publication$resultado)) {
+  stop(
+    "Alguna correspondencia entre matriz y anotaciones falló. Revisa revision_heatmap_publication."
+  )
+} else {
+  log_write(
+    "Verificación correcta: la matriz y las anotaciones están listas para el heatmap de publicación."
+  )
+}
+
+# ============================================================
+# 7.9. Generar heatmap en inglés para publicación
+# ============================================================
+
+heatmap_metacyc_publication <- pheatmap(
+  metacyc_scaled_publication,
+  annotation_row = annot_row_publication,
+  annotation_col = annot_col_publication,
+  annotation_colors = annotation_colors_publication,
+  show_colnames = FALSE,
+  show_rownames = FALSE,
+  cluster_cols = TRUE,
+  cluster_rows = TRUE,
+  fontsize = 7,
+  border_color = NA,
+  breaks = custom_breaks_publication,
+  color = colorRampPalette(
+    c("navy", "white", "firebrick3")
+  )(100),
+  main = " ",
+  silent = TRUE
+)
+
+log_write(
+  "Heatmap en inglés para publicación generado como objeto heatmap_metacyc_publication."
+)
+
+# ============================================================
+# 7.10. Mostrar heatmap en el visor gráfico
+# ============================================================
+
+grid.newpage()
+grid.draw(heatmap_metacyc_publication$gtable)
+
+grid.text(
+  permanova_label,
+  x = 0.5,
+  y = 0.02,
+  gp = gpar(
+    fontsize = 11,
+    fontface = "bold"
+  )
+)
+
+log_write(
+  "Heatmap de publicación dibujado en el visor gráfico con etiqueta: ",
+  permanova_label
+)
+
+# ============================================================
+# 7.11. Guardar heatmap en JPG
+# ============================================================
+
+file_heatmap_publication_jpg <- file.path(
+  dir_figures,
+  "Figure_01_MetaCyc_all_functional_categories_heatmap_zscore_publication.jpg"
+)
+
+jpeg(
+  filename = file_heatmap_publication_jpg,
+  width = 14,
+  height = 10,
+  units = "in",
+  res = 300
+)
+
+grid.newpage()
+grid.draw(heatmap_metacyc_publication$gtable)
+
+grid.text(
+  permanova_label,
+  x = 0.5,
+  y = 0.02,
+  gp = gpar(
+    fontsize = 11,
+    fontface = "bold"
+  )
+)
+
+dev.off()
+
+log_write(
+  "Heatmap de publicación guardado en JPG: ",
+  file_heatmap_publication_jpg
+)
+
+# ============================================================
+# 7.12. Guardar heatmap en PDF
+# ============================================================
+
+file_heatmap_publication_pdf <- file.path(
+  dir_figures,
+  "Figure_01_MetaCyc_all_functional_categories_heatmap_zscore_publication.pdf"
+)
+
+pdf(
+  file = file_heatmap_publication_pdf,
+  width = 14,
+  height = 10
+)
+
+grid.newpage()
+grid.draw(heatmap_metacyc_publication$gtable)
+
+grid.text(
+  permanova_label,
+  x = 0.5,
+  y = 0.02,
+  gp = gpar(
+    fontsize = 11,
+    fontface = "bold"
+  )
+)
+
+dev.off()
+
+log_write(
+  "Heatmap de publicación guardado en PDF: ",
+  file_heatmap_publication_pdf
+)
+
+# ============================================================
+# 7.13. Guardar objetos y tablas del bloque
+# ============================================================
+
+saveRDS(
+  metacyc_matrix_filtered,
+  file = file.path(dir_objects, "07_metacyc_matrix_filtered_all_functions.rds")
+)
+
+saveRDS(
+  annot_row_publication,
+  file = file.path(dir_objects, "07_annot_row_publication.rds")
+)
+
+saveRDS(
+  annot_col_publication,
+  file = file.path(dir_objects, "07_annot_col_publication.rds")
+)
+
+saveRDS(
+  metacyc_scaled_publication,
+  file = file.path(dir_objects, "07_metacyc_scaled_publication.rds")
+)
+
+saveRDS(
+  heatmap_metacyc_publication,
+  file = file.path(dir_objects, "07_heatmap_metacyc_publication.rds")
+)
+
+write_tsv(
+  metacyc_scaled_publication_df,
+  file = file.path(dir_tables, "07_metacyc_scaled_publication_zscore.tsv")
+)
+
+write_csv(
+  heatmap_category_summary,
+  file = file.path(
+    dir_tables,
+    "MetaCyc_all_functional_categories_heatmap_summary.csv"
+  )
+)
+
+write_csv(
+  tabla_colores_desierto_publication,
+  file = file.path(dir_tables, "07_colores_desierto_publication.csv")
+)
+
+write_csv(
+  tabla_colores_categorias_publication,
+  file = file.path(dir_tables, "07_colores_categorias_publication.csv")
+)
+
+write_csv(
+  revision_heatmap_publication,
+  file = file.path(dir_tables, "07_revision_heatmap_publication.csv")
+)
+
+log_write(
+  "Resumen de categorías del heatmap guardado en: ",
+  file.path(
+    dir_tables,
+    "MetaCyc_all_functional_categories_heatmap_summary.csv"
+  )
+)
+
+# ============================================================
+# 7.14. Resumen de archivos generados
+# ============================================================
+
+tabla_outputs_heatmap_publication <- tibble(
+  output = c(
+    "Heatmap publication JPG",
+    "Heatmap publication PDF",
+    "Objeto R heatmap",
+    "Matriz escalada publication",
+    "Anotación de filas publication",
+    "Anotación de columnas publication",
+    "Resumen de categorías"
+  ),
+  ruta = c(
+    file_heatmap_publication_jpg,
+    file_heatmap_publication_pdf,
+    file.path(dir_objects, "07_heatmap_metacyc_publication.rds"),
+    file.path(dir_tables, "07_metacyc_scaled_publication_zscore.tsv"),
+    file.path(dir_objects, "07_annot_row_publication.rds"),
+    file.path(dir_objects, "07_annot_col_publication.rds"),
+    file.path(
+      dir_tables,
+      "MetaCyc_all_functional_categories_heatmap_summary.csv"
+    )
+  )
+)
+
+preview_table(
+  tabla_outputs_heatmap_publication,
+  table_name = "tabla_outputs_heatmap_publication",
+  n = 5,
+  max_cols = Inf
+)
+
+write_csv(
+  tabla_outputs_heatmap_publication,
+  file = file.path(dir_tables, "07_outputs_heatmap_publication.csv")
+)
+
+log_write(
+  "Tabla de outputs del heatmap de publicación guardada en: ",
+  file.path(dir_tables, "07_outputs_heatmap_publication.csv")
+)
+
+log_write("Bloque 7 completado correctamente.")
+```
+
+## Revisión rápida del heatmap de publicación
+
+```{r bloque_7_revision_outputs_publication}
+tabla_outputs_heatmap_publication
+file.exists(file_heatmap_publication_jpg)
+file.exists(file_heatmap_publication_pdf)
+heatmap_category_summary
+```
+# Bloque 8. Verificación final de outputs y cierre de bitácora
+
+En este bloque se revisan los archivos principales generados por el protocolo, se confirma si existen en las carpetas de salida y se guarda la información de sesión de R. Esto permite dejar una trazabilidad final del análisis y facilita reproducir el protocolo posteriormente.
+
+```{r bloque_8_verificacion_final, message=FALSE, warning=FALSE}
+# ============================================================
+# Bloque 8. Verificación final de outputs y cierre de bitácora
+# ============================================================
+
+log_step(
+  "Bloque 8. Verificación final de outputs y cierre de bitácora",
+  "Se revisan los archivos principales generados y se guarda la información de sesión de R."
+)
+
+# ============================================================
+# 8.1. Listar archivos generados por carpeta
+# ============================================================
+
+archivos_figuras <- list.files(
+  dir_figures,
+  full.names = TRUE
+)
+
+archivos_tablas <- list.files(
+  dir_tables,
+  full.names = TRUE
+)
+
+archivos_objetos <- list.files(
+  dir_objects,
+  full.names = TRUE
+)
+
+archivos_logs <- list.files(
+  dir_logs,
+  full.names = TRUE
+)
+
+tabla_archivos_figuras <- tibble(
+  tipo = "figura",
+  archivo = basename(archivos_figuras),
+  ruta = archivos_figuras,
+  existe = file.exists(archivos_figuras)
+)
+
+tabla_archivos_tablas <- tibble(
+  tipo = "tabla",
+  archivo = basename(archivos_tablas),
+  ruta = archivos_tablas,
+  existe = file.exists(archivos_tablas)
+)
+
+tabla_archivos_objetos <- tibble(
+  tipo = "objeto_R",
+  archivo = basename(archivos_objetos),
+  ruta = archivos_objetos,
+  existe = file.exists(archivos_objetos)
+)
+
+tabla_archivos_logs <- tibble(
+  tipo = "bitacora",
+  archivo = basename(archivos_logs),
+  ruta = archivos_logs,
+  existe = file.exists(archivos_logs)
+)
+
+tabla_archivos_generados <- bind_rows(
+  tabla_archivos_figuras,
+  tabla_archivos_tablas,
+  tabla_archivos_objetos,
+  tabla_archivos_logs
+)
+
+preview_table(
+  tabla_archivos_generados,
+  table_name = "tabla_archivos_generados",
+  n = 5,
+  max_cols = Inf
+)
+
+# ============================================================
+# 8.2. Verificar archivos principales esperados
+# ============================================================
+
+archivos_principales_esperados <- tibble(
+  output = c(
+    "Heatmap español JPG",
+    "Heatmap español PDF",
+    "Heatmap publicación JPG",
+    "Heatmap publicación PDF",
+    "Tabla resumen categorías heatmap",
+    "Tabla PERMANOVA funcional",
+    "Bitácora del proyecto"
+  ),
+  ruta = c(
+    file.path(
+      dir_figures,
+      "06_heatmap_metacyc_zscore_permanova_espanol.jpg"
+    ),
+    file.path(
+      dir_figures,
+      "06_heatmap_metacyc_zscore_permanova_espanol.pdf"
+    ),
+    file.path(
+      dir_figures,
+      "Figure_01_MetaCyc_all_functional_categories_heatmap_zscore_publication.jpg"
+    ),
+    file.path(
+      dir_figures,
+      "Figure_01_MetaCyc_all_functional_categories_heatmap_zscore_publication.pdf"
+    ),
+    file.path(
+      dir_tables,
+      "MetaCyc_all_functional_categories_heatmap_summary.csv"
+    ),
+    file.path(
+      dir_tables,
+      "05_permanova_funcional.csv"
+    ),
+    log_file
+  )
+) %>%
+  mutate(
+    existe = file.exists(ruta)
+  )
+
+preview_table(
+  archivos_principales_esperados,
+  table_name = "archivos_principales_esperados",
+  n = 7,
+  max_cols = Inf
+)
+
+if (!all(archivos_principales_esperados$existe)) {
+  log_write(
+    "Advertencia: no todos los archivos principales esperados fueron encontrados."
+  )
+} else {
+  log_write(
+    "Verificación correcta: todos los archivos principales esperados existen."
+  )
+}
+
+# ============================================================
+# 8.3. Guardar inventario completo de archivos generados
+# ============================================================
+
+file_inventory <- file.path(
+  dir_tables,
+  "08_inventario_archivos_generados.csv"
+)
+
+write_csv(
+  tabla_archivos_generados,
+  file_inventory
+)
+
+log_write(
+  "Inventario completo de archivos generado en: ",
+  file_inventory
+)
+
+# ============================================================
+# 8.4. Guardar resumen de archivos principales esperados
+# ============================================================
+
+file_expected_outputs <- file.path(
+  dir_tables,
+  "08_verificacion_archivos_principales.csv"
+)
+
+write_csv(
+  archivos_principales_esperados,
+  file_expected_outputs
+)
+
+log_write(
+  "Verificación de archivos principales guardada en: ",
+  file_expected_outputs
+)
+
+# ============================================================
+# 8.5. Guardar información de sesión de R
+# ============================================================
+
+session_info_text <- capture.output(sessionInfo())
+
+file_session_info <- file.path(
+  dir_logs,
+  "08_sessionInfo.txt"
+)
+
+cat(
+  session_info_text,
+  sep = "\n",
+  file = file_session_info
+)
+
+log_write(
+  "Información de sesión de R guardada en: ",
+  file_session_info
+)
+
+# ============================================================
+# 8.6. Crear resumen final del protocolo
+# ============================================================
+
+tabla_resumen_final_protocolo <- tibble(
+  elemento = c(
+    "Proyecto",
+    "Archivo de entrada",
+    "Número de muestras",
+    "Número de funciones MetaCyc limpias",
+    "Número de categorías funcionales presentes",
+    "PERMANOVA",
+    "Directorio de figuras",
+    "Directorio de tablas",
+    "Directorio de objetos R",
+    "Archivo de bitácora"
+  ),
+  valor = c(
+    project_name,
+    file_metacyc,
+    as.character(nrow(metacyc_matrix)),
+    as.character(ncol(metacyc_matrix)),
+    as.character(nrow(heatmap_category_summary)),
+    permanova_label,
+    dir_figures,
+    dir_tables,
+    dir_objects,
+    log_file
+  )
+)
+
+preview_table(
+  tabla_resumen_final_protocolo,
+  table_name = "tabla_resumen_final_protocolo",
+  n = 10,
+  max_cols = Inf
+)
+
+file_resumen_final <- file.path(
+  dir_tables,
+  "08_resumen_final_protocolo.csv"
+)
+
+write_csv(
+  tabla_resumen_final_protocolo,
+  file_resumen_final
+)
+
+log_write(
+  "Resumen final del protocolo guardado en: ",
+  file_resumen_final
+)
+
+# ============================================================
+# 8.7. Cierre de bitácora
+# ============================================================
+
+log_write(
+  "\n============================================================"
+)
+
+log_write(
+  "PROTOCOLO COMPLETADO: ",
+  project_name
+)
+
+log_write(
+  "Fecha y hora de cierre: ",
+  Sys.time()
+)
+
+log_write(
+  "Resultado estadístico principal: ",
+  permanova_label
+)
+
+log_write(
+  "Figura principal de publicación JPG: ",
+  file.path(
+    dir_figures,
+    "Figure_01_MetaCyc_all_functional_categories_heatmap_zscore_publication.jpg"
+  )
+)
+
+log_write(
+  "Figura principal de publicación PDF: ",
+  file.path(
+    dir_figures,
+    "Figure_01_MetaCyc_all_functional_categories_heatmap_zscore_publication.pdf"
+  )
+)
+
+log_write(
+  "Bitácora guardada en: ",
+  log_file
+)
+
+log_write(
+  "============================================================\n"
+)
+
+log_write("Bloque 8 completado correctamente.")
+```
+
+## Revisión rápida del cierre del protocolo
+
+```{r bloque_8_revision_final}
+tabla_resumen_final_protocolo
+archivos_principales_esperados
+```
+# Bloque 9. Revisión de archivos opcionales para limpieza
+
+En este bloque se clasifican los archivos generados por el protocolo en dos grupos: archivos recomendados para conservar y archivos intermedios que pueden eliminarse si ya se verificó que el análisis es correcto. Por seguridad, este bloque no borra archivos automáticamente.
+
+```{r bloque_9_revision_limpieza_outputs, message=FALSE, warning=FALSE}
+# ============================================================
+# Bloque 9. Revisión de archivos opcionales para limpieza
+# ============================================================
+
+log_step(
+  "Bloque 9. Revisión de archivos opcionales para limpieza",
+  "Se clasifican los archivos generados en conservar u opcionales para borrar. No se borra nada automáticamente."
+)
+
+# ============================================================
+# 9.1. Archivos recomendados para conservar
+# ============================================================
+
+archivos_conservar <- tibble(
+  categoria = "CONSERVAR",
+  archivo = c(
+    "06_heatmap_metacyc_zscore_permanova_espanol.jpg",
+    "06_heatmap_metacyc_zscore_permanova_espanol.pdf",
+    "Figure_01_MetaCyc_all_functional_categories_heatmap_zscore_publication.jpg",
+    "Figure_01_MetaCyc_all_functional_categories_heatmap_zscore_publication.pdf",
+    "05_permanova_funcional.csv",
+    "05_permanova_label.csv",
+    "MetaCyc_all_functional_categories_heatmap_summary.csv",
+    "04_tabla_funcion_categoria.csv",
+    "08_resumen_final_protocolo.csv",
+    "08_verificacion_archivos_principales.csv",
+    paste0(project_name, "_bitacora.txt"),
+    "08_sessionInfo.txt"
+  ),
+  carpeta = c(
+    rep(dir_figures, 4),
+    rep(dir_tables, 6),
+    dir_logs,
+    dir_logs
+  )
+) %>%
+  mutate(
+    ruta = file.path(carpeta, archivo),
+    existe = file.exists(ruta)
+  )
+
+preview_table(
+  archivos_conservar,
+  table_name = "archivos_recomendados_para_conservar",
+  n = 12,
+  max_cols = Inf
+)
+
+# ============================================================
+# 9.2. Archivos intermedios opcionales
+# ============================================================
+
+archivos_opcionales_borrar <- tibble(
+  categoria = "OPCIONAL_BORRAR",
+  archivo = c(
+    "02_metacyc_clean.tsv",
+    "05_metacyc_scaled_zscore.tsv",
+    "05_metacyc_rel_abundancias_relativas.tsv",
+    "07_metacyc_scaled_publication_zscore.tsv",
+    "05_distancia_bray_curtis_funcional.csv",
+    "04_funciones_no_clasificadas.csv"
+  ),
+  carpeta = c(
+    dir_tables,
+    dir_tables,
+    dir_tables,
+    dir_tables,
+    dir_tables,
+    dir_tables
+  )
+) %>%
+  mutate(
+    ruta = file.path(carpeta, archivo),
+    existe = file.exists(ruta)
+  )
+
+preview_table(
+  archivos_opcionales_borrar,
+  table_name = "archivos_intermedios_opcionales_para_borrar",
+  n = 10,
+  max_cols = Inf
+)
+
+# ============================================================
+# 9.3. Revisar objetos R intermedios
+# ============================================================
+
+objetos_r_generados <- list.files(
+  dir_objects,
+  full.names = TRUE
+)
+
+tabla_objetos_r <- tibble(
+  categoria = "OBJETO_R_REGENERABLE",
+  archivo = basename(objetos_r_generados),
+  ruta = objetos_r_generados,
+  existe = file.exists(objetos_r_generados)
+)
+
+preview_table(
+  tabla_objetos_r,
+  table_name = "objetos_r_generados_regenerables",
+  n = 10,
+  max_cols = Inf
+)
+
+# ============================================================
+# 9.4. Guardar plan de limpieza
+# ============================================================
+
+plan_limpieza_outputs <- bind_rows(
+  archivos_conservar,
+  archivos_opcionales_borrar,
+  tabla_objetos_r %>%
+    select(categoria, archivo, ruta, existe)
+)
+
+file_plan_limpieza <- file.path(
+  dir_tables,
+  "09_plan_limpieza_outputs.csv"
+)
+
+write_csv(
+  plan_limpieza_outputs,
+  file_plan_limpieza
+)
+
+log_write(
+  "Plan de limpieza guardado en: ",
+  file_plan_limpieza
+)
+
+log_write(
+  "Bloque 9 completado correctamente. No se borró ningún archivo."
+)
+```
+# Bloque 10. Borrado de archivos no marcados como conservar
+
+En este bloque se eliminan de manera definitiva los archivos generados por el protocolo que no están marcados como `CONSERVAR` en el plan de limpieza. Esto permite dejar una carpeta final más limpia, conservando únicamente las figuras principales, tablas clave, bitácora e información de sesión.
+
+```{r bloque_10_borrar_no_conservar, message=FALSE, warning=FALSE}
+# ============================================================
+# Bloque 10. Borrado de archivos no marcados como conservar
+# ============================================================
+
+log_step(
+  "Bloque 10. Borrado de archivos no marcados como conservar",
+  "Se eliminan archivos del plan de limpieza cuya categoría no sea CONSERVAR."
+)
+
+# ============================================================
+# 10.1. Leer plan de limpieza
+# ============================================================
+
+file_plan_limpieza <- file.path(
+  dir_tables,
+  "09_plan_limpieza_outputs.csv"
+)
+
+if (!file.exists(file_plan_limpieza)) {
+  stop(
+    paste0(
+      "No se encontró el plan de limpieza:\n",
+      file_plan_limpieza,
+      "\nPrimero debes correr el Bloque 9."
+    )
+  )
+}
+
+plan_limpieza_outputs <- read_csv(
+  file_plan_limpieza,
+  show_col_types = FALSE
+)
+
+preview_table(
+  plan_limpieza_outputs,
+  table_name = "plan_limpieza_outputs_completo",
+  n = 5,
+  max_cols = Inf
+)
+
+# ============================================================
+# 10.2. Seleccionar archivos que NO dicen CONSERVAR
+# ============================================================
+
+archivos_para_borrar <- plan_limpieza_outputs %>%
+  filter(categoria != "CONSERVAR") %>%
+  mutate(
+    existe_antes_de_borrar = file.exists(ruta)
+  )
+
+preview_table(
+  archivos_para_borrar,
+  table_name = "archivos_para_borrar_no_conservar",
+  n = 10,
+  max_cols = Inf
+)
+
+log_write(
+  "Número de archivos marcados para borrar: ",
+  nrow(archivos_para_borrar)
+)
+
+log_write(
+  "Número de archivos que existen antes de borrar: ",
+  sum(archivos_para_borrar$existe_antes_de_borrar)
+)
+
+# ============================================================
+# 10.3. Verificación de seguridad
+# ============================================================
+# Este paso evita borrar accidentalmente archivos fuera del directorio
+# del proyecto MetaCyc_abundance_heatmap.
+
+archivos_fuera_del_proyecto <- archivos_para_borrar %>%
+  filter(
+    existe_antes_de_borrar,
+    !startsWith(ruta, dir_project)
+  )
+
+preview_table(
+  archivos_fuera_del_proyecto,
+  table_name = "archivos_fuera_del_proyecto_no_se_borraran",
+  n = 10,
+  max_cols = Inf
+)
+
+if (nrow(archivos_fuera_del_proyecto) > 0) {
+  stop(
+    paste0(
+      "Hay archivos para borrar que están fuera del directorio del proyecto.\n",
+      "Por seguridad, no se borró nada. Revisa archivos_fuera_del_proyecto."
+    )
+  )
+} else {
+  log_write(
+    "Verificación correcta: todos los archivos a borrar están dentro del directorio del proyecto."
+  )
+}
+
+# ============================================================
+# 10.4. Borrar archivos no marcados como CONSERVAR
+# ============================================================
+
+rutas_para_borrar <- archivos_para_borrar %>%
+  filter(existe_antes_de_borrar) %>%
+  pull(ruta)
+
+resultado_borrado <- file.remove(rutas_para_borrar)
+
+tabla_resultado_borrado <- tibble(
+  ruta = rutas_para_borrar,
+  archivo = basename(rutas_para_borrar),
+  borrado_correctamente = resultado_borrado,
+  existe_despues_de_borrar = file.exists(rutas_para_borrar)
+)
+
+preview_table(
+  tabla_resultado_borrado,
+  table_name = "tabla_resultado_borrado",
+  n = 10,
+  max_cols = Inf
+)
+
+log_write(
+  "Archivos borrados correctamente: ",
+  sum(tabla_resultado_borrado$borrado_correctamente)
+)
+
+log_write(
+  "Archivos que no pudieron borrarse: ",
+  sum(!tabla_resultado_borrado$borrado_correctamente)
+)
+
+# ============================================================
+# 10.5. Guardar reporte de borrado
+# ============================================================
+
+file_reporte_borrado <- file.path(
+  dir_tables,
+  "10_reporte_borrado_archivos_no_conservar.csv"
+)
+
+write_csv(
+  tabla_resultado_borrado,
+  file_reporte_borrado
+)
+
+log_write(
+  "Reporte de borrado guardado en: ",
+  file_reporte_borrado
+)
+
+# ============================================================
+# 10.6. Verificar archivos que sí deben conservarse
+# ============================================================
+
+archivos_conservar_post_borrado <- plan_limpieza_outputs %>%
+  filter(categoria == "CONSERVAR") %>%
+  mutate(
+    existe_despues_de_limpieza = file.exists(ruta)
+  )
+
+preview_table(
+  archivos_conservar_post_borrado,
+  table_name = "archivos_conservar_post_borrado",
+  n = 12,
+  max_cols = Inf
+)
+
+if (!all(archivos_conservar_post_borrado$existe_despues_de_limpieza)) {
+  log_write(
+    "Advertencia: algún archivo marcado como CONSERVAR no existe después de la limpieza."
+  )
+} else {
+  log_write(
+    "Verificación correcta: todos los archivos marcados como CONSERVAR siguen existiendo."
+  )
+}
+
+# ============================================================
+# 10.7. Guardar reporte de archivos conservados
+# ============================================================
+
+file_reporte_conservados <- file.path(
+  dir_tables,
+  "10_reporte_archivos_conservados_post_limpieza.csv"
+)
+
+write_csv(
+  archivos_conservar_post_borrado,
+  file_reporte_conservados
+)
+
+log_write(
+  "Reporte de archivos conservados guardado en: ",
+  file_reporte_conservados
+)
+
+# ============================================================
+# 10.8. Cierre del bloque
+# ============================================================
+
+log_write(
+  "Bloque 10 completado correctamente. Se borraron los archivos no marcados como CONSERVAR."
+)
+```
+
+## Revisión rápida después del borrado
+
+```{r bloque_10_revision_post_borrado}
+tabla_resultado_borrado
+archivos_conservar_post_borrado
+```

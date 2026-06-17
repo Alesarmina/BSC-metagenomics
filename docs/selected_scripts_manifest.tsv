@@ -1,0 +1,10 @@
+new_file	source_file	description
+01_taxonomic_PCoA_Bray_Curtis_species.Rmd	/Users/ale/Desktop/kraken_gtdb/kraken_analysis_gtdb/diversidad_bracken/bracken_especie/Fig2_PCoA.Rmd	Taxonomic PCoA based on species-level Bray-Curtis dissimilarities
+02_soil_physicochemical_PCA.Rmd	/Users/ale/Desktop/kraken_gtdb/kraken_analysis_gtdb/Analisis_FQ_diversidad_gtdb/FQ_Diversidad/FQ_Diversidad_PCA.Rmd	Soil physicochemical PCA and related analyses
+03_soil_physicochemical_analysis.Rmd	/Users/ale/Desktop/kraken_gtdb/kraken_analysis_gtdb/diversidad_bracken/Relación_ambiente_composición/Fisicoquímicos_Desierto/Analisis_fisicoquimicos_desierto.Rmd	Soil physicochemical analysis by desert
+04_MetaCyc_heatmap.Rmd	/Users/ale/Desktop/HUMAnN3/Figura4_heatmap_metacyc.Rmd	MetaCyc functional category heatmap
+05_MetaCyc_abundance_violins.Rmd	/Users/ale/Desktop/HUMAnN3/MetaCyc_abundance_violins.Rmd	MetaCyc abundance violin plots
+06_functional_category_violins_and_bars.Rmd	/Users/ale/Desktop/HUMAnN3/Figuras_5_violines_barras.Rmd	Functional category violin and bar plots
+07_KO_differential_by_category.Rmd	/Users/ale/Desktop/HUMAnN3/Geneset_diferencial_x_categoría_V.2.Rmd	KO-level differential analysis by functional category
+08_MetaCyc_KO_functions.Rmd	/Users/ale/Desktop/HUMAnN3/Funciones_metacyc_KO.Rmd	Functional analysis linking MetaCyc and KO-level results
+map_UniRef90_to_KO_reduced.sh	/Users/ale/Desktop/HUMAnN3/hummann_origen/mapa_reducido.sh	UniRef90 to KO reduced mapping script
