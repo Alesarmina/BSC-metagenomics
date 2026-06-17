@@ -1,6 +1,6 @@
 cff-version: 1.2.0
 title: "BSC-metagenomics"
-message: "If you use this code, please cite the associated manuscript and the archived Zenodo DOI."
+message: "If you use this code, please cite the associated manuscript and the archived Zenodo DOI: 10.5281/zenodo.20737992."
 type: software
 authors:
   - family-names: Sarmina
@@ -20,3 +20,4 @@ keywords:
 license: MIT
 version: "1.0.0"
 date-released: "2026-06-17"
+doi: 10.5281/zenodo.20737992

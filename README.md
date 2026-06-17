@@ -68,3 +68,9 @@ A template for local paths is provided in:
 A full audit of local absolute paths is provided in:
 
 `docs/local_absolute_paths_audit.txt`
+
+## Archived release
+
+The analysis code is archived in Zenodo under DOI:
+
+10.5281/zenodo.20737992
